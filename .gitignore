@@ -31,7 +31,3 @@ yarn-error.log*
 Thumbs.db
 .vscode/
 .idea/
-
-# AI models (fetched by scripts/fetch-models.mjs)
-models/
-public/models/

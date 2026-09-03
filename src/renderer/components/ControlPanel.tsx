@@ -22,20 +22,16 @@ import {
   Sparkles,
   Move,
   ChevronDown,
-  ArrowDown,
-  Cpu
+  ArrowDown
 } from 'lucide-react';
 import {
   FilterSettings,
   TransformSettings,
   BatteryInfo,
   OverlayItem,
-  OverlayFilters,
-  PipelineSettings,
-  PipelineHud
+  OverlayFilters
 } from '../../shared/types';
 import opticxIcon from '../../assets/opticx-icon.png';
-import { AiPipelinePanel } from './AiPipelinePanel';
 import { CustomSelect } from './CustomSelect';
 
 interface ControlPanelProps {
@@ -43,6 +39,7 @@ interface ControlPanelProps {
   battery: BatteryInfo | null;
   batteryTrend: 'up' | 'down' | 'none';
   isConnected: boolean;
+  connectionStatus: 'disconnected' | 'connecting' | 'connected' | 'error';
   filters: FilterSettings;
   transform: TransformSettings;
   overlays: OverlayItem[];
@@ -80,22 +77,15 @@ interface ControlPanelProps {
   selectedOverlayId: string | null;
   onOverlaySelect: (id: string | null) => void;
   focusOverlaysSignal: number;
-  pipeline: PipelineSettings;
-  pipelineHud: PipelineHud;
-  sourceWidth: number;
-  sourceHeight: number;
-  pipelineSafeMode: boolean;
-  onPipelineChange: (next: Partial<PipelineSettings>) => void;
-  onPanicReset: () => void;
-  onUseAiResolution: () => void;
 }
 
-type TabType = 'camera' | 'filters' | 'transform' | 'overlays' | 'ai';
+type TabType = 'camera' | 'filters' | 'transform' | 'overlays';
 export const ControlPanel: React.FC<ControlPanelProps> = ({
   phoneName,
   battery,
   batteryTrend,
   isConnected,
+  connectionStatus,
   filters,
   transform,
   overlays,
@@ -132,15 +122,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   onOverlayDelete,
   selectedOverlayId,
   onOverlaySelect,
-  focusOverlaysSignal,
-  pipeline,
-  pipelineHud,
-  sourceWidth,
-  sourceHeight,
-  pipelineSafeMode,
-  onPipelineChange,
-  onPanicReset,
-  onUseAiResolution
+  focusOverlaysSignal
 }) => {
   const [activeTab, setActiveTab] = useState<TabType>('camera');
 
@@ -212,25 +194,51 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
           <div className="flex items-center gap-2 min-w-0 pr-2">
             <div
               className={`w-2 h-2 rounded-full shrink-0 transition-all duration-300 ${
-                isConnected
+                connectionStatus === 'connected'
                   ? 'bg-white shadow-[0_0_8px_rgba(255,255,255,0.9)] animate-pulse-subtle'
-                  : 'bg-neutral-600 shadow-none'
+                  : connectionStatus === 'connecting'
+                    ? 'bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.9)] animate-pulse'
+                    : connectionStatus === 'error'
+                      ? 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.9)]'
+                      : 'bg-neutral-600 shadow-none'
               }`}
             />
-            <span className="text-xs font-medium text-neutral-300 truncate">
-              {phoneName || 'Android Device'}
-            </span>
+            <div className="flex flex-col min-w-0">
+              <span className="text-xs font-medium text-neutral-300 truncate">
+                {phoneName || 'Android Device'}
+              </span>
+              <span
+                className={`text-[10px] font-medium truncate ${
+                  connectionStatus === 'connected'
+                    ? 'text-emerald-400'
+                    : connectionStatus === 'connecting'
+                      ? 'text-amber-400'
+                      : connectionStatus === 'error'
+                        ? 'text-red-400'
+                        : 'text-neutral-500'
+                }`}
+              >
+                {connectionStatus === 'connected'
+                  ? 'Connected'
+                  : connectionStatus === 'connecting'
+                    ? 'Connecting…'
+                    : connectionStatus === 'error'
+                      ? 'Connection failed'
+                      : 'Disconnected'}
+              </span>
+            </div>
           </div>
 
           <button
             onClick={isConnected ? onDisconnect : onConnect}
-            className={`text-xs px-3 py-1 rounded-md font-medium transition-all duration-200 active:scale-95 shrink-0 ${
+            disabled={connectionStatus === 'connecting'}
+            className={`text-xs px-3 py-1 rounded-md font-medium transition-all duration-200 active:scale-95 shrink-0 disabled:opacity-60 disabled:cursor-not-allowed ${
               isConnected
                 ? 'bg-white/10 hover:bg-white/20 text-neutral-300 border border-white/15'
                 : 'bg-white hover:bg-neutral-200 text-black shadow-sm font-semibold'
             }`}
           >
-            {isConnected ? 'Disconnect' : 'Connect'}
+            {connectionStatus === 'connecting' ? 'Connecting…' : isConnected ? 'Disconnect' : 'Connect'}
           </button>
         </div>
       </div>
@@ -241,8 +249,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
             { id: 'camera', label: 'Camera', icon: Settings2 },
             { id: 'filters', label: 'Filters', icon: Sparkles },
             { id: 'transform', label: 'Transform', icon: Move },
-            { id: 'overlays', label: 'Overlays', icon: Layers, badge: overlays.length > 0 },
-            { id: 'ai', label: 'AI', icon: Cpu }
+            { id: 'overlays', label: 'Overlays', icon: Layers, badge: overlays.length > 0 }
           ] as const
         ).map((tab) => {
           const isActive = activeTab === tab.id;
@@ -897,19 +904,6 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
               </div>
             )}
           </div>
-        )}
-
-        {activeTab === 'ai' && (
-          <AiPipelinePanel
-            pipeline={pipeline}
-            hud={pipelineHud}
-            sourceWidth={sourceWidth}
-            sourceHeight={sourceHeight}
-            safeMode={pipelineSafeMode}
-            onChange={onPipelineChange}
-            onPanicReset={onPanicReset}
-            onUseAiResolution={onUseAiResolution}
-          />
         )}
       </div>
 

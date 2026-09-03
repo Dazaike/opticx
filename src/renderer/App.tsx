@@ -4,7 +4,6 @@ import { H264Decoder } from './decoder';
 import { WebGLRenderer } from './webgl-renderer';
 import { Nv12Encoder } from './nv12-encoder';
 import { FrameScheduler } from './frame-scheduler';
-import { PipelineRunner } from './pipeline-runtime';
 import { ControlPanel } from './components/ControlPanel';
 import { playDingSound } from './audio';
 import opticxIcon from '../assets/opticx-icon.png';
@@ -31,11 +30,7 @@ import {
   OverlayItem,
   OverlayFilters,
   DEFAULT_OVERLAY_FILTERS,
-  StreamConfig,
-  PipelineSettings,
-  PipelineHud,
-  DEFAULT_PIPELINE,
-  EMPTY_PIPELINE_HUD
+  StreamConfig
 } from '../shared/types';
 
 type OutputFps = 30 | 60;
@@ -128,7 +123,6 @@ export const App: React.FC = () => {
   const rendererRef = useRef<WebGLRenderer | null>(null);
   const decoderRef = useRef<H264Decoder | null>(null);
   const schedulerRef = useRef(new FrameScheduler<VideoFrame>(3));
-  const pipelineRunnerRef = useRef(new PipelineRunner());
   const wsRef = useRef<WebSocket | null>(null);
   const encoderRef = useRef<Nv12Encoder | null>(null);
   const vcamActiveRef = useRef<boolean>(false);
@@ -148,6 +142,7 @@ export const App: React.FC = () => {
 
   // States
   const [isConnected, setIsConnected] = useState<boolean>(false);
+  const [connectionStatus, setConnectionStatus] = useState<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected');
   const [phoneName, setPhoneName] = useState<string>('Galaxy Note 9');
   const [battery, setBattery] = useState<BatteryInfo | null>(null);
   const [activeCamera, setActiveCamera] = useState<number>(0);
@@ -185,19 +180,6 @@ export const App: React.FC = () => {
       console.warn('Failed to save transform settings to localStorage:', err);
     }
   }, [transform]);
-  const [pipeline, setPipeline] = useState<PipelineSettings>({
-    artifactReduction: { ...DEFAULT_PIPELINE.artifactReduction },
-    denoise: { ...DEFAULT_PIPELINE.denoise },
-    superRes: { ...DEFAULT_PIPELINE.superRes },
-    fastUpscale: { ...DEFAULT_PIPELINE.fastUpscale },
-    rife: { ...DEFAULT_PIPELINE.rife },
-    fsr: { ...DEFAULT_PIPELINE.fsr }
-  });
-  const [pipelineHud, setPipelineHud] = useState<PipelineHud>({ ...EMPTY_PIPELINE_HUD, stageMs: { ...EMPTY_PIPELINE_HUD.stageMs } });
-  const [pipelineSafeMode, setPipelineSafeMode] = useState(false);
-  const pipelineRef = useRef(pipeline);
-  const pipelineHydratedRef = useRef(false);
-  pipelineRef.current = pipeline;
 
   // Overlays
   const [overlays, setOverlays] = useState<OverlayItem[]>([]);
@@ -312,20 +294,6 @@ export const App: React.FC = () => {
     encoderRef.current = encoder;
 
     const scheduler = schedulerRef.current;
-    const sourceStats = { n: 0, t: performance.now(), fps: 0 };
-    const outputStats = { n: 0, t: performance.now(), fps: 0 };
-    let hudLast = 0;
-
-    const tickRate = (stats: { n: number; t: number; fps: number }, now: number): number => {
-      stats.n++;
-      const dt = now - stats.t;
-      if (dt >= 500) {
-        stats.fps = (stats.n * 1000) / dt;
-        stats.n = 0;
-        stats.t = now;
-      }
-      return stats.fps;
-    };
 
     const encodeVcam = (): void => {
       if (
@@ -341,17 +309,13 @@ export const App: React.FC = () => {
       if (now - lastVcamSendRef.current < 1000 / fpsRef.current - 2) return;
       lastVcamSendRef.current = now;
       encodeBusyRef.current = true;
-      const filters = filtersRef.current;
-      const transform = transformRef.current;
-      const hasOverlays = overlaysRef.current.some((o) => o.visible) && !document.hidden;
+      const hasOverlays = overlaysRef.current.some((o) => o.visible);
       setTimeout(() => {
         try {
           if (hasOverlays) {
-            const composition = composeVirtualFrame();
-            if (composition) {
-              window.electronAPI.sendVcamFrame(
-                encoder.encode(composition, composition.width, composition.height)
-              );
+            const composed = composeVirtualFrame();
+            if (composed) {
+              window.electronAPI.sendVcamFrame(encoder.encodeTexture(composed, 3840, 2160));
             }
           } else {
             const texture = renderer.renderBroadcast(filters, transform);
@@ -365,7 +329,6 @@ export const App: React.FC = () => {
       }, 0);
     };
 
-    let aiBusy = false;
     const present = (nowMs: number): void => {
       const frame = scheduler.acquireForPresent(nowMs * 1000, 1e6 / 60);
       if (!frame) {
@@ -373,97 +336,21 @@ export const App: React.FC = () => {
         return;
       }
 
-      const pipe = pipelineRef.current;
-      const aiOn =
-        pipe.artifactReduction.enabled ||
-        pipe.denoise.enabled ||
-        pipe.superRes.enabled ||
-        pipe.fastUpscale.enabled ||
-        pipe.rife.enabled;
-
-      const finishHud = (timestamp: number, extra?: Partial<PipelineHud>) => {
-        const outFps = tickRate(outputStats, nowMs);
-        if (!quadSeededRef.current) {
-          quadSeededRef.current = true;
-          setCameraQuad(renderer.getContentQuadNdc());
-          setCenterQuad(renderer.getCenterQuadNdc(transformRef.current));
-        }
-        if (nowMs - hudLast >= 400) {
-          hudLast = nowMs;
-          setPipelineHud((prev) => ({
-            ...prev,
-            sourceFps: sourceStats.fps,
-            outputFps: outFps,
-            droppedFrames: scheduler.dropped,
-            e2eLatencyMs: Math.max(0, nowMs - timestamp / 1000),
-            ...extra,
-            stageMs: { ...prev.stageMs, ...extra?.stageMs }
-          }));
-        }
-      };
-
-      if (!aiOn || aiBusy) {
-        renderer.render(frame, filtersRef.current, transformRef.current, {
-          fsr: pipe.fsr.enabled
-        });
-        finishHud(frame.timestamp);
-        frame.close();
-        encodeVcam();
-        return;
+      renderer.render(frame, filtersRef.current, transformRef.current);
+      if (!quadSeededRef.current) {
+        quadSeededRef.current = true;
+        setCameraQuad(renderer.getContentQuadNdc());
+        setCenterQuad(renderer.getCenterQuadNdc(transformRef.current));
       }
-
-      aiBusy = true;
-      void pipelineRunnerRef.current
-        .process(frame, pipe)
-        .then((out) => {
-          const fsr = { fsr: pipelineRef.current.fsr.enabled };
-          for (const produced of out.frames) {
-            renderer.renderRgba(
-              produced.rgba,
-              produced.width,
-              produced.height,
-              filtersRef.current,
-              transformRef.current,
-              fsr
-            );
-          }
-          finishHud(out.frames[out.frames.length - 1]?.timestamp ?? nowMs * 1000, {
-            stageMs: {
-              artifactReduction: out.stageMs.artifactReduction ?? 0,
-              denoise: out.stageMs.denoise ?? 0,
-              rife: out.stageMs.rife ?? 0,
-              superRes: out.stageMs.superRes ?? 0,
-              upscale: out.stageMs.upscale ?? 0,
-              fsr: 0,
-              nv12: 0
-            },
-            errors: out.errors,
-            totalGpuMs: Object.values(out.stageMs).reduce((a, b) => a + (b ?? 0), 0)
-          });
-          if (out.disable.length > 0) {
-            setPipeline((prev) => {
-              const next = { ...prev };
-              for (const id of out.disable) {
-                next[id] = { ...next[id], enabled: false } as never;
-              }
-              return next;
-            });
-          }
-          encodeVcam();
-        })
-        .catch((err) => {
-          console.error('AI pipeline error:', err);
-        })
-        .finally(() => {
-          aiBusy = false;
-        });
+      frame.close();
+      encodeVcam();
     };
 
     const decoder = new H264Decoder((frame: VideoFrame) => {
-      tickRate(sourceStats, performance.now());
       scheduler.push(frame);
     });
     decoderRef.current = decoder;
+
 
     let rafId = requestAnimationFrame(function onRaf(t) {
       present(t);
@@ -633,95 +520,6 @@ export const App: React.FC = () => {
     });
   }, []);
 
-  useEffect(() => {
-    void window.electronAPI.pipelineLoad().then((loaded) => {
-      setPipeline(loaded.settings);
-      setPipelineSafeMode(loaded.safeMode);
-      setPipelineHud((prev) => ({ ...prev, fxReady: loaded.fx.ready }));
-      pipelineHydratedRef.current = true;
-    });
-  }, []);
-
-  useEffect(() => {
-    if (!pipelineHydratedRef.current) return;
-    void window.electronAPI.pipelineSave(pipeline);
-  }, [pipeline]);
-
-  useEffect(() => {
-    const needFx =
-      pipeline.artifactReduction.enabled ||
-      pipeline.denoise.enabled ||
-      pipeline.superRes.enabled ||
-      pipeline.fastUpscale.enabled;
-    if (!needFx) return;
-    let cancelled = false;
-    void (async () => {
-      const started = await window.electronAPI.fxStart();
-      if (cancelled) return;
-      setPipelineHud((prev) => ({ ...prev, fxReady: started.ok }));
-      if (!started.ok) {
-        setPipelineHud((prev) => ({
-          ...prev,
-          errors: { ...prev.errors, artifactReduction: started.error }
-        }));
-        return;
-      }
-      const configured = await window.electronAPI.fxConfigure({
-        artifactReduction: pipeline.artifactReduction,
-        denoise: pipeline.denoise,
-        superRes: pipeline.superRes,
-        fastUpscale: pipeline.fastUpscale
-      });
-      if (cancelled || configured.ok) return;
-      setPipelineHud((prev) => ({
-        ...prev,
-        errors: { ...prev.errors, superRes: configured.error }
-      }));
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [pipeline]);
-
-  useEffect(() => {
-    if (!pipeline.rife.enabled) return;
-    let cancelled = false;
-    void (async () => {
-      const model = await window.electronAPI.fxModel();
-      if (cancelled) return;
-      if (!model.ok || !model.data) {
-        setPipelineHud((prev) => ({
-          ...prev,
-          rifeModelReady: false,
-          errors: { ...prev.errors, rife: model.error ?? 'model not downloaded' }
-        }));
-        return;
-      }
-      const bytes = model.data instanceof Uint8Array ? model.data : new Uint8Array(model.data as ArrayBuffer);
-      const copy = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-      try {
-        await pipelineRunnerRef.current.rife.init(copy);
-        pipelineRunnerRef.current.rife.sensitivity = pipeline.rife.sensitivity;
-        if (cancelled) return;
-        setPipelineHud((prev) => ({
-          ...prev,
-          rifeModelReady: true,
-          errors: { ...prev.errors, rife: undefined }
-        }));
-      } catch (err) {
-        if (cancelled) return;
-        setPipelineHud((prev) => ({
-          ...prev,
-          rifeModelReady: false,
-          errors: { ...prev.errors, rife: err instanceof Error ? err.message : String(err) }
-        }));
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [pipeline.rife.enabled]);
-
   const [resolution, setResolution] = useState<string>('3840x2160');
 
   useEffect(() => {
@@ -732,6 +530,7 @@ export const App: React.FC = () => {
   }, []);
 
   const handleConnect = async (customRes?: string) => {
+    setConnectionStatus('connecting');
     try {
       const resToUse = customRes || resolution;
       const [wStr, hStr] = resToUse.split('x');
@@ -749,6 +548,7 @@ export const App: React.FC = () => {
       const result = await window.electronAPI.connect(streamConfig);
       if (!result.success) {
         console.error('Failed to connect:', result.error);
+        setConnectionStatus('error');
         return;
       }
 
@@ -763,6 +563,7 @@ export const App: React.FC = () => {
 
       ws.onopen = () => {
         console.log('[App] WebSocket video bridge connected');
+        setConnectionStatus('connected');
       };
 
       ws.onmessage = (event) => {
@@ -775,8 +576,14 @@ export const App: React.FC = () => {
         }
       };
 
+      ws.onerror = () => {
+        console.error('[App] WebSocket video bridge error');
+        setConnectionStatus('error');
+      };
+
       ws.onclose = () => {
         console.log('[App] WebSocket video bridge closed');
+        setConnectionStatus((prev) => (prev === 'error' ? prev : 'disconnected'));
       };
 
       wsRef.current = ws;
@@ -796,6 +603,7 @@ export const App: React.FC = () => {
     } catch (err) {
       console.error('Connection error:', err);
       setIsConnected(false);
+      setConnectionStatus('error');
     }
   };
 
@@ -809,11 +617,11 @@ export const App: React.FC = () => {
       decoderRef.current?.reset();
       schedulerRef.current.clear();
       rendererRef.current?.clear();
-      void window.electronAPI.fxResetTemporal();
-      pipelineRunnerRef.current.reset();
       setIsConnected(false);
+      setConnectionStatus('disconnected');
     } catch (err) {
       console.error('Disconnect error:', err);
+      setConnectionStatus('error');
     }
   };
 
@@ -1760,6 +1568,7 @@ export const App: React.FC = () => {
               battery={battery}
               batteryTrend={batteryTrend}
               isConnected={isConnected}
+              connectionStatus={connectionStatus}
               filters={filters}
               transform={transform}
               overlays={overlays}
@@ -1802,29 +1611,6 @@ export const App: React.FC = () => {
               selectedOverlayId={selectedOverlayId}
               onOverlaySelect={setSelectedOverlayId}
               focusOverlaysSignal={focusOverlaysSignal}
-              pipeline={pipeline}
-              pipelineHud={pipelineHud}
-              sourceWidth={parseInt(resolution.split('x')[0], 10) || 1920}
-              sourceHeight={parseInt(resolution.split('x')[1], 10) || 1080}
-              pipelineSafeMode={pipelineSafeMode}
-              onPipelineChange={(next) => {
-                setPipeline((prev) => ({ ...prev, ...next }));
-                void window.electronAPI.pipelineMarkDirty();
-              }}
-              onPanicReset={() => {
-                setPipeline({
-                  artifactReduction: { enabled: false, mode: 'con' },
-                  denoise: { enabled: false, strength: 0 },
-                  superRes: { enabled: false, scale: 2, mode: 'con' },
-                  fastUpscale: { enabled: false, scale: 2, strength: 0.4 },
-                  rife: { enabled: false, sensitivity: 0.35 },
-                  fsr: { enabled: true }
-                });
-                void window.electronAPI.pipelineMarkClean();
-              }}
-              onUseAiResolution={() => {
-                void handleResolutionChange('1920x1080');
-              }}
             />
           </motion.div>
         )}

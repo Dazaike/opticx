@@ -6,17 +6,7 @@ import { DroidCamHttpClient } from './droidcam-http';
 import { VideoStreamServer } from './video-bridge';
 import { VirtualCamera, VCAM_FRAME_BYTES } from './virtual-cam';
 import type { VcamFps } from './virtual-cam';
-import { StreamConfig, PipelineSettings, FxConfigureRequest, FxStage } from '../shared/types';
-import {
-  FxBridge,
-  consumeCrashGuard,
-  isSafeModeRequested,
-  loadPipelineSettings,
-  markPipelineClean,
-  markPipelineDirty,
-  resolveRifeModelPath,
-  savePipelineSettings
-} from './fx-bridge';
+import { StreamConfig } from '../shared/types';
 
 
 process.on('uncaughtException', (err) => {
@@ -34,8 +24,6 @@ const socketClient = new DroidCamSocketClient();
 const httpClient = new DroidCamHttpClient();
 const videoBridge = new VideoStreamServer(8999);
 const virtualCam = new VirtualCamera();
-const fxBridge = new FxBridge();
-let pipelineSafeMode = false;
 
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.commandLine.appendSwitch('disable-background-timer-throttling');
@@ -228,8 +216,6 @@ app.on('before-quit', () => {
   socketClient.disconnect();
   videoBridge.stop();
   virtualCam.stop();
-  void fxBridge.stop();
-  markPipelineClean();
 });
 
 ipcMain.handle('stream:connect', async (_event, config: StreamConfig) => {
@@ -352,59 +338,3 @@ ipcMain.on('vcam:frame', (_event, nv12: Uint8Array) => {
   }
 });
 
-ipcMain.handle('pipeline:load', () => {
-  pipelineSafeMode = isSafeModeRequested() || consumeCrashGuard();
-  const stored = loadPipelineSettings();
-  const settings = pipelineSafeMode
-    ? {
-        ...stored,
-        artifactReduction: { ...stored.artifactReduction, enabled: false },
-        denoise: { ...stored.denoise, enabled: false },
-        superRes: { ...stored.superRes, enabled: false },
-        fastUpscale: { ...stored.fastUpscale, enabled: false },
-        rife: { ...stored.rife, enabled: false }
-      }
-    : stored;
-  return {
-    settings,
-    safeMode: pipelineSafeMode,
-    fx: fxBridge.status,
-    rifeModelReady: resolveRifeModelPath() !== null
-  };
-});
-
-ipcMain.handle('pipeline:save', (_event, settings: PipelineSettings) => {
-  savePipelineSettings(settings);
-  return { ok: true };
-});
-
-ipcMain.handle('pipeline:markDirty', () => {
-  markPipelineDirty();
-  return { ok: true };
-});
-ipcMain.handle('pipeline:markClean', () => {
-  markPipelineClean();
-  return { ok: true };
-});
-ipcMain.handle('fx:start', async () => fxBridge.start());
-ipcMain.handle('fx:stop', async () => {
-  await fxBridge.stop();
-  return { ok: true };
-});
-ipcMain.handle('fx:status', () => fxBridge.status);
-ipcMain.handle('fx:configure', async (_event, config: FxConfigureRequest) => fxBridge.configure(config));
-ipcMain.handle('fx:resetTemporal', async () => fxBridge.resetTemporal());
-ipcMain.handle('fx:process', async (_event, stage: FxStage, slot: number) => fxBridge.process(stage, slot));
-ipcMain.handle(
-  'fx:writeInput',
-  (_event, rgba: Uint8Array, width: number, height: number, pts: string) =>
-    fxBridge.writeInput(rgba, width, height, BigInt(pts))
-);
-ipcMain.handle('fx:readOutput', (_event, slot: number) => fxBridge.readOutput(slot));
-ipcMain.handle('fx:model', () => {
-  const modelPath = resolveRifeModelPath();
-  if (!modelPath) return { ok: false, error: 'model not downloaded' };
-  const data = fs.readFileSync(modelPath);
-  return { ok: true, path: modelPath, data };
-});
-ipcMain.handle('fx:modelPresent', () => ({ ok: resolveRifeModelPath() !== null }));

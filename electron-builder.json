@@ -18,25 +18,12 @@
       "to": "public/opticx-icon.png"
     },
     {
-      "from": "models",
-      "to": "models",
-      "filter": ["*.onnx"]
-    },
-    {
       "from": "native/opticx-vcam/build/Release/opticx-vcam.dll",
       "to": "native/opticx-vcam/opticx-vcam.dll"
     },
     {
       "from": "native/opticx-vcam/addon/build/Release/opticx_writer.node",
       "to": "native/opticx-vcam/opticx_writer.node"
-    },
-    {
-      "from": "native/opticx-fx/build/Release/opticx_fx.node",
-      "to": "native/opticx-fx/opticx_fx.node"
-    },
-    {
-      "from": "native/opticx-fx/build/Release/opticx-fx-host.exe",
-      "to": "native/opticx-fx/opticx-fx-host.exe"
     }
   ],
   "win": {
