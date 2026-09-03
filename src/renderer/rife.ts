@@ -1,8 +1,14 @@
 /// <reference types="vite/client" />
-import * as ort from 'onnxruntime-web/webgpu';
 import type { InferenceSession, Tensor } from 'onnxruntime-web/webgpu';
+import type * as OrtType from 'onnxruntime-web/webgpu';
 import packWgsl from './wgsl/rife-pack.wgsl?raw';
 
+type OrtModule = typeof OrtType;
+let ortPromise: Promise<OrtModule> | null = null;
+function getOrt(): Promise<OrtModule> {
+  if (!ortPromise) ortPromise = import('onnxruntime-web/webgpu');
+  return ortPromise;
+}
 export type RifeFrame = VideoFrame | ImageBitmap | HTMLCanvasElement | OffscreenCanvas;
 
 const WASM_CDN = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/';
@@ -151,6 +157,7 @@ export class RifeInterpolator {
   private device: GpuDevice | null = null;
   private packPipeline: GpuComputePipeline | null = null;
   private unpackPipeline: GpuComputePipeline | null = null;
+  private ort: OrtModule | null = null;
   private tex0: GpuTexture | null = null;
   private tex1: GpuTexture | null = null;
   private buf0: GpuBuffer | null = null;
@@ -205,7 +212,8 @@ export class RifeInterpolator {
     const adapter = await gpu.requestAdapter({ powerPreference: 'high-performance' });
     if (!adapter) throw new Error('WebGPU unavailable');
 
-    // Local dist first; Vite/Electron often 404s node_modules wasm, then fall back to the 1.19.2 CDN.
+    const ort = await getOrt();
+    this.ort = ort;
     try {
       ort.env.wasm.wasmPaths = new URL('../../node_modules/onnxruntime-web/dist/', import.meta.url).href;
     } catch {
@@ -215,7 +223,6 @@ export class RifeInterpolator {
     ort.env.wasm.proxy = false;
     ort.env.webgpu.powerPreference = 'high-performance';
     ort.env.webgpu.adapter = adapter;
-
     const sessionOptions = {
       executionProviders: ['webgpu'] as const,
       preferredOutputLocation: 'gpu-buffer' as const
@@ -473,8 +480,8 @@ export class RifeInterpolator {
     if (this.gpuTensor) {
       try {
         return {
-          img0: ort.Tensor.fromGpuBuffer(this.buf0 as never, { dataType: 'float32', dims }),
-          img1: ort.Tensor.fromGpuBuffer(this.buf1 as never, { dataType: 'float32', dims }),
+          img0: this.ort!.Tensor.fromGpuBuffer(this.buf0 as never, { dataType: 'float32', dims }),
+          img1: this.ort!.Tensor.fromGpuBuffer(this.buf1 as never, { dataType: 'float32', dims }),
           gpu: true
         };
       } catch {
@@ -484,8 +491,8 @@ export class RifeInterpolator {
     const floats0 = await this.mapFloats(this.buf0, 3 * padW * padH);
     const floats1 = await this.mapFloats(this.buf1, 3 * padW * padH);
     return {
-      img0: new ort.Tensor('float32', floats0, dims),
-      img1: new ort.Tensor('float32', floats1, dims),
+      img0: new this.ort!.Tensor('float32', floats0, dims),
+      img1: new this.ort!.Tensor('float32', floats1, dims),
       gpu: false
     };
   }
@@ -502,9 +509,9 @@ export class RifeInterpolator {
     const ctx = canvas.getContext('2d', { willReadFrequently: true }) as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
     if (!ctx) throw new Error('RIFE canvas unavailable');
     ctx.drawImage(prev as CanvasImageSource, 0, 0, w, h);
-    const img0 = new ort.Tensor('float32', packNchw(ctx.getImageData(0, 0, w, h).data, w, h, padW, padH), [1, 3, padH, padW]);
+    const img0 = new this.ort!.Tensor('float32', packNchw(ctx.getImageData(0, 0, w, h).data, w, h, padW, padH), [1, 3, padH, padW]);
     ctx.drawImage(next as CanvasImageSource, 0, 0, w, h);
-    const img1 = new ort.Tensor('float32', packNchw(ctx.getImageData(0, 0, w, h).data, w, h, padW, padH), [1, 3, padH, padW]);
+    const img1 = new this.ort!.Tensor('float32', packNchw(ctx.getImageData(0, 0, w, h).data, w, h, padW, padH), [1, 3, padH, padW]);
     return { img0, img1 };
   }
 
@@ -519,7 +526,7 @@ export class RifeInterpolator {
     gpuInputs: boolean
   ): Promise<Uint8Array> {
     const session = this.session!;
-    const t = new ort.Tensor('float32', new Float32Array([timestep]), [1, 1, 1, 1]);
+    const t = new this.ort!.Tensor('float32', new Float32Array([timestep]), [1, 1, 1, 1]);
     const names = session.inputNames;
     const feeds: Record<string, Tensor> = {};
     if (names.includes('img0') && names.includes('img1')) {
@@ -556,7 +563,7 @@ export class RifeInterpolator {
   ): Record<string, Tensor> | undefined {
     if (!gpuInputs || !this.gpuTensor || !this.bufOut) return undefined;
     try {
-      const tensor = ort.Tensor.fromGpuBuffer(this.bufOut as never, {
+      const tensor = this.ort!.Tensor.fromGpuBuffer(this.bufOut as never, {
         dataType: 'float32',
         dims: [1, 3, padH, padW]
       });

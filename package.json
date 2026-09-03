@@ -1,13 +1,13 @@
 {
   "name": "opticx",
-  "version": "1.1.7",
+  "version": "1.1.9",
   "description": "Optic X Studio - High-Performance 4K Camera & Virtual Studio",
   "main": "dist/main/index.js",
   "scripts": {
     "dev": "vite",
     "build:vcam-addon": "node scripts/build-opticx-writer.mjs",
     "build": "npm run build:vcam-addon && tsc -b && vite build && tsc -p tsconfig.node.json",
-    "start": "npm run build:vcam-addon && electron .",
+    "start": "electron dist/main/index.js",
     "test:vcam": "node scripts/test-opticx-writer.mjs",
     "test:vcam:electron": "electron scripts/test-opticx-writer-electron.cjs",
     "test:scheduler": "node scripts/test-frame-scheduler.mjs",

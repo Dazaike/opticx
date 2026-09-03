@@ -217,7 +217,12 @@ export class WebGLRenderer {
     return this.getQuadNdc({ ...transform, offsetX: 0, offsetY: 0 }, inset);
   }
 
-  render(frame: VideoFrame, filters: FilterSettings, transform: TransformSettings): void {
+  render(
+    frame: VideoFrame,
+    filters: FilterSettings,
+    transform: TransformSettings,
+    _options?: { fsr?: boolean }
+  ): void {
     const gl = this.gl;
     if (!this.program || !this.videoTexture) return;
 
@@ -226,6 +231,27 @@ export class WebGLRenderer {
     this.frameSource.texture = this.videoTexture;
     this.frameSource.width = frame.displayWidth;
     this.frameSource.height = frame.displayHeight;
+    if (gl.drawingBufferWidth >= 2 && gl.drawingBufferHeight >= 2) {
+      this.draw(filters, transform, gl.drawingBufferWidth, gl.drawingBufferHeight, null, 0.82);
+    }
+  }
+
+  renderRgba(
+    rgba: Uint8Array,
+    width: number,
+    height: number,
+    filters: FilterSettings,
+    transform: TransformSettings,
+    _options?: { fsr?: boolean }
+  ): void {
+    const gl = this.gl;
+    if (!this.program || !this.videoTexture) return;
+
+    gl.bindTexture(gl.TEXTURE_2D, this.videoTexture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+    this.frameSource.texture = this.videoTexture;
+    this.frameSource.width = width;
+    this.frameSource.height = height;
     if (gl.drawingBufferWidth >= 2 && gl.drawingBufferHeight >= 2) {
       this.draw(filters, transform, gl.drawingBufferWidth, gl.drawingBufferHeight, null, 0.82);
     }
