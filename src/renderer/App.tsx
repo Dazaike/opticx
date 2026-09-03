@@ -28,7 +28,11 @@ import {
   OverlayItem,
   OverlayFilters,
   DEFAULT_OVERLAY_FILTERS,
-  StreamConfig
+  StreamConfig,
+  PipelineSettings,
+  PipelineHud,
+  DEFAULT_PIPELINE,
+  EMPTY_PIPELINE_HUD
 } from '../shared/types';
 
 type OutputFps = 30 | 60;
@@ -65,6 +69,57 @@ const DEFAULT_TRANSFORM: TransformSettings = {
   fitMode: 'contain'
 };
 
+const STORAGE_KEY_TRANSFORM = 'opticx_transform_settings';
+
+const loadSavedTransform = (): TransformSettings => {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_TRANSFORM);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        const rotation = [0, 90, 180, 270].includes(parsed.rotation)
+          ? parsed.rotation
+          : DEFAULT_TRANSFORM.rotation;
+        const flipH = typeof parsed.flipH === 'boolean' ? parsed.flipH : DEFAULT_TRANSFORM.flipH;
+        const flipV = typeof parsed.flipV === 'boolean' ? parsed.flipV : DEFAULT_TRANSFORM.flipV;
+        const scaleX =
+          typeof parsed.scaleX === 'number' && Number.isFinite(parsed.scaleX) && parsed.scaleX > 0
+            ? parsed.scaleX
+            : DEFAULT_TRANSFORM.scaleX;
+        const scaleY =
+          typeof parsed.scaleY === 'number' && Number.isFinite(parsed.scaleY) && parsed.scaleY > 0
+            ? parsed.scaleY
+            : DEFAULT_TRANSFORM.scaleY;
+        const offsetX =
+          typeof parsed.offsetX === 'number' && Number.isFinite(parsed.offsetX)
+            ? parsed.offsetX
+            : DEFAULT_TRANSFORM.offsetX;
+        const offsetY =
+          typeof parsed.offsetY === 'number' && Number.isFinite(parsed.offsetY)
+            ? parsed.offsetY
+            : DEFAULT_TRANSFORM.offsetY;
+        const fitMode = ['contain', 'cover', 'fill', 'none'].includes(parsed.fitMode)
+          ? parsed.fitMode
+          : DEFAULT_TRANSFORM.fitMode;
+
+        return {
+          rotation,
+          flipH,
+          flipV,
+          scaleX,
+          scaleY,
+          offsetX,
+          offsetY,
+          fitMode
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to load saved transform settings from localStorage:', err);
+  }
+  return { ...DEFAULT_TRANSFORM };
+};
+
 export const App: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const rendererRef = useRef<WebGLRenderer | null>(null);
@@ -74,8 +129,9 @@ export const App: React.FC = () => {
   const vcamActiveRef = useRef<boolean>(false);
   const lastVcamSendRef = useRef<number>(0);
   const encodeBusyRef = useRef<boolean>(false);
+  const initialTransformRef = useRef<TransformSettings>(loadSavedTransform());
   const filtersRef = useRef<FilterSettings>(DEFAULT_FILTERS);
-  const transformRef = useRef<TransformSettings>(DEFAULT_TRANSFORM);
+  const transformRef = useRef<TransformSettings>(initialTransformRef.current);
   const fpsRef = useRef<OutputFps>(30);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const editorFrameRef = useRef<HTMLDivElement | null>(null);
@@ -115,7 +171,28 @@ export const App: React.FC = () => {
   const [fps, setFps] = useState<OutputFps>(30);
   const [switchingRes, setSwitchingRes] = useState<string | null>(null);
   const [filters, setFilters] = useState<FilterSettings>({ ...DEFAULT_FILTERS });
-  const [transform, setTransform] = useState<TransformSettings>({ ...DEFAULT_TRANSFORM });
+  const [transform, setTransform] = useState<TransformSettings>(initialTransformRef.current);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY_TRANSFORM, JSON.stringify(transform));
+    } catch (err) {
+      console.warn('Failed to save transform settings to localStorage:', err);
+    }
+  }, [transform]);
+  const [pipeline, setPipeline] = useState<PipelineSettings>({
+    artifactReduction: { ...DEFAULT_PIPELINE.artifactReduction },
+    denoise: { ...DEFAULT_PIPELINE.denoise },
+    superRes: { ...DEFAULT_PIPELINE.superRes },
+    fastUpscale: { ...DEFAULT_PIPELINE.fastUpscale },
+    rife: { ...DEFAULT_PIPELINE.rife },
+    fsr: { ...DEFAULT_PIPELINE.fsr }
+  });
+  const [pipelineHud, setPipelineHud] = useState<PipelineHud>({ ...EMPTY_PIPELINE_HUD, stageMs: { ...EMPTY_PIPELINE_HUD.stageMs } });
+  const [pipelineSafeMode, setPipelineSafeMode] = useState(false);
+  const pipelineRef = useRef(pipeline);
+  const pipelineHydratedRef = useRef(false);
+  pipelineRef.current = pipeline;
 
   // Overlays
   const [overlays, setOverlays] = useState<OverlayItem[]>([]);
@@ -222,8 +299,8 @@ export const App: React.FC = () => {
 
     const renderer = new WebGLRenderer(canvasRef.current);
     rendererRef.current = renderer;
-    setCameraQuad(renderer.getQuadNdc(DEFAULT_TRANSFORM));
-    setCenterQuad(renderer.getCenterQuadNdc(DEFAULT_TRANSFORM));
+    setCameraQuad(renderer.getQuadNdc(transformRef.current));
+    setCenterQuad(renderer.getCenterQuadNdc(transformRef.current));
 
     const gl = canvasRef.current.getContext('webgl2');
     const encoder = gl ? new Nv12Encoder(gl) : null;
@@ -439,6 +516,20 @@ export const App: React.FC = () => {
       setLowBatteryWarning(info.level <= 20);
     });
   }, []);
+
+  useEffect(() => {
+    void window.electronAPI.pipelineLoad().then((loaded) => {
+      setPipeline(loaded.settings);
+      setPipelineSafeMode(loaded.safeMode);
+      setPipelineHud((prev) => ({ ...prev, fxReady: loaded.fx.ready }));
+      pipelineHydratedRef.current = true;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!pipelineHydratedRef.current) return;
+    void window.electronAPI.pipelineSave(pipeline);
+  }, [pipeline]);
 
   const [resolution, setResolution] = useState<string>('3840x2160');
 
@@ -1434,6 +1525,26 @@ export const App: React.FC = () => {
           selectedOverlayId={selectedOverlayId}
           onOverlaySelect={setSelectedOverlayId}
           focusOverlaysSignal={focusOverlaysSignal}
+          pipeline={pipeline}
+          pipelineHud={pipelineHud}
+          sourceWidth={parseInt(resolution.split('x')[0], 10) || 1920}
+          sourceHeight={parseInt(resolution.split('x')[1], 10) || 1080}
+          pipelineSafeMode={pipelineSafeMode}
+          onPipelineChange={(next) => {
+            setPipeline((prev) => ({ ...prev, ...next }));
+            void window.electronAPI.pipelineMarkDirty();
+          }}
+          onPanicReset={() => {
+            setPipeline({
+              artifactReduction: { enabled: false, mode: 'con' },
+              denoise: { enabled: false, strength: 0 },
+              superRes: { enabled: false, scale: 2, mode: 'con' },
+              fastUpscale: { enabled: false, scale: 2, strength: 0.4 },
+              rife: { enabled: false, sensitivity: 0.35 },
+              fsr: { enabled: true }
+            });
+            void window.electronAPI.pipelineMarkClean();
+          }}
         />
       )}
 
