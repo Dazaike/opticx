@@ -1,0 +1,8 @@
+LIBRARY opticx-vcam
+
+EXPORTS
+    DllGetClassObject       PRIVATE
+    DllCanUnloadNow         PRIVATE
+    DllRegisterServer       PRIVATE
+    DllUnregisterServer     PRIVATE
+    DllInstall              PRIVATE

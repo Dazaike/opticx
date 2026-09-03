@@ -1,0 +1,38 @@
+{
+  "name": "opticx",
+  "version": "1.0.23",
+  "description": "Optic X Studio - High-Performance 4K Camera & Virtual Studio",
+  "main": "dist/main/index.js",
+  "scripts": {
+    "dev": "vite",
+    "build:vcam-addon": "node scripts/build-opticx-writer.mjs",
+    "build": "npm run build:vcam-addon && tsc -b && vite build && tsc -p tsconfig.node.json",
+    "start": "npm run build:vcam-addon && electron .",
+    "test:vcam": "node scripts/test-opticx-writer.mjs",
+    "test:vcam:electron": "electron scripts/test-opticx-writer-electron.cjs"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/node": "^22.5.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "@types/ws": "^8.5.12",
+    "@vitejs/plugin-react": "^4.3.1",
+    "autoprefixer": "^10.5.4",
+    "electron": "^32.0.1",
+    "electron-builder": "^24.13.3",
+    "lucide-react": "^0.436.0",
+    "node-gyp": "^12.4.0",
+    "postcss": "^8.5.28",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.2",
+    "vite-plugin-electron": "^0.28.7",
+    "vite-plugin-electron-renderer": "^0.14.5"
+  }
+}
