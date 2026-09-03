@@ -1,5 +1,6 @@
 import { createRequire } from 'module';
 import path from 'path';
+import fs from 'fs';
 
 /**
  * Writer half of the OpticX Cam shared-memory video queue. The DirectShow
@@ -23,7 +24,17 @@ export const VCAM_FRAME_BYTES = (VCAM_WIDTH * VCAM_HEIGHT * 3) / 2;
 const HEADER_SIZE = 0x50;
 const FRAME_HEADER_SIZE = 32;
 const SLOT_COUNT = 3;
-const ADDON_PATH = path.resolve(__dirname, '../../native/opticx-vcam/addon/build/Release/opticx_writer.node');
+function resolveAddonPath(): string {
+  const candidates = [
+    path.join(process.resourcesPath || '', 'native/opticx-vcam/opticx_writer.node'),
+    path.join(__dirname, '../../native/opticx-vcam/addon/build/Release/opticx_writer.node'),
+    path.resolve(__dirname, '../native/opticx-vcam/addon/build/Release/opticx_writer.node')
+  ];
+  for (const candidate of candidates) {
+    if (candidate && fs.existsSync(candidate)) return candidate;
+  }
+  return candidates[1];
+}
 const nativeRequire = createRequire(import.meta.url);
 
 export const QUEUE_STATE_INVALID = 0;
@@ -65,7 +76,8 @@ let writer: NativeWriter | null = null;
 function nativeWriter(): NativeWriter {
   if (writer) return writer;
   try {
-    writer = nativeRequire(ADDON_PATH) as NativeWriter;
+    const addonPath = resolveAddonPath();
+    writer = nativeRequire(addonPath) as NativeWriter;
     return writer;
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);

@@ -87,6 +87,7 @@ interface ControlPanelProps {
   pipelineSafeMode: boolean;
   onPipelineChange: (next: Partial<PipelineSettings>) => void;
   onPanicReset: () => void;
+  onUseAiResolution: () => void;
 }
 
 type TabType = 'camera' | 'filters' | 'transform' | 'overlays' | 'ai';
@@ -138,7 +139,8 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   sourceHeight,
   pipelineSafeMode,
   onPipelineChange,
-  onPanicReset
+  onPanicReset,
+  onUseAiResolution
 }) => {
   const [activeTab, setActiveTab] = useState<TabType>('camera');
 
@@ -906,6 +908,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
             safeMode={pipelineSafeMode}
             onChange={onPipelineChange}
             onPanicReset={onPanicReset}
+            onUseAiResolution={onUseAiResolution}
           />
         )}
       </div>

@@ -1,5 +1,12 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { StreamConfig, BatteryInfo } from '../shared/types';
+import {
+  StreamConfig,
+  BatteryInfo,
+  PipelineSettings,
+  FxConfigureRequest,
+  FxStage,
+  FxProcessResult
+} from '../shared/types';
 
 export const electronAPI = {
   // Stream connection
@@ -48,8 +55,45 @@ export const electronAPI = {
     };
   },
 
-  // Screenshot
-  saveScreenshot: (dataUrl: string) => ipcRenderer.invoke('screenshot:save', dataUrl)
+  saveScreenshot: (dataUrl: string) => ipcRenderer.invoke('screenshot:save', dataUrl),
+
+  pipelineLoad: (): Promise<{
+    settings: PipelineSettings;
+    safeMode: boolean;
+    fx: { ready: boolean; error?: string };
+    rifeModelReady: boolean;
+  }> => ipcRenderer.invoke('pipeline:load'),
+  pipelineSave: (settings: PipelineSettings) => ipcRenderer.invoke('pipeline:save', settings),
+  pipelineMarkDirty: () => ipcRenderer.invoke('pipeline:markDirty'),
+  pipelineMarkClean: () => ipcRenderer.invoke('pipeline:markClean'),
+
+  fxStart: (): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('fx:start'),
+  fxStop: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('fx:stop'),
+  fxStatus: (): Promise<{ ready: boolean; error?: string }> => ipcRenderer.invoke('fx:status'),
+  fxConfigure: (config: FxConfigureRequest) => ipcRenderer.invoke('fx:configure', config),
+  fxResetTemporal: () => ipcRenderer.invoke('fx:resetTemporal'),
+  fxProcess: (stage: FxStage, slot: number): Promise<FxProcessResult> =>
+    ipcRenderer.invoke('fx:process', stage, slot),
+  fxModel: (): Promise<{ ok: boolean; path?: string; data?: Buffer; error?: string }> =>
+    ipcRenderer.invoke('fx:model'),
+  fxModelPresent: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('fx:modelPresent'),
+
+  fxWriteInput: (
+    rgba: Uint8Array,
+    width: number,
+    height: number,
+    pts: bigint
+  ): Promise<{ ok: boolean; slot?: number; error?: string }> =>
+    ipcRenderer.invoke('fx:writeInput', rgba, width, height, pts.toString()),
+  fxReadOutput: (
+    slot: number
+  ): Promise<{
+    ok: boolean;
+    rgba?: Uint8Array;
+    width?: number;
+    height?: number;
+    error?: string;
+  }> => ipcRenderer.invoke('fx:readOutput', slot)
 };
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI);

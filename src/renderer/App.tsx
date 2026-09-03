@@ -1822,6 +1822,9 @@ export const App: React.FC = () => {
                 });
                 void window.electronAPI.pipelineMarkClean();
               }}
+              onUseAiResolution={() => {
+                void handleResolutionChange('1920x1080');
+              }}
             />
           </motion.div>
         )}

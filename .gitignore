@@ -4,6 +4,7 @@ node_modules/
 # Production & Build outputs
 dist/
 build/
+release/
 *.tsbuildinfo
 
 # Native build artifacts

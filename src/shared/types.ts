@@ -128,6 +128,7 @@ export interface PipelineHud {
   warnings: Partial<Record<PipelineStageId, string>>;
   rifeModelReady: boolean;
   fxReady: boolean;
+  fxError?: string;
 }
 
 export const EMPTY_PIPELINE_HUD: PipelineHud = {

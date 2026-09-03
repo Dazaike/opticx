@@ -117,20 +117,36 @@ function nchwToRgba(rgb: ArrayLike<number>, padW: number, padH: number, srcW: nu
   return out;
 }
 
-function packNchw(pixels: Uint8ClampedArray, srcW: number, srcH: number, padW: number, padH: number): Float32Array {
-  const out = new Float32Array(3 * padW * padH);
+/**
+ * Builds the model's single [1, 7, padH, padW] input: img0 RGB, img1 RGB, then
+ * a constant timestep plane. Edges are replicate-padded.
+ */
+function pack7(
+  a: Uint8ClampedArray,
+  b: Uint8ClampedArray,
+  srcW: number,
+  srcH: number,
+  padW: number,
+  padH: number,
+  timestep: number
+): Float32Array {
   const plane = padW * padH;
+  const out = new Float32Array(7 * plane);
   for (let y = 0; y < padH; y++) {
     const sy = y < srcH ? y : srcH - 1;
     for (let x = 0; x < padW; x++) {
       const sx = x < srcW ? x : srcW - 1;
       const i = (sy * srcW + sx) * 4;
       const o = y * padW + x;
-      out[o] = pixels[i] / 255;
-      out[plane + o] = pixels[i + 1] / 255;
-      out[plane * 2 + o] = pixels[i + 2] / 255;
+      out[o] = a[i] / 255;
+      out[plane + o] = a[i + 1] / 255;
+      out[plane * 2 + o] = a[i + 2] / 255;
+      out[plane * 3 + o] = b[i] / 255;
+      out[plane * 4 + o] = b[i + 1] / 255;
+      out[plane * 5 + o] = b[i + 2] / 255;
     }
   }
+  out.fill(timestep, plane * 6, plane * 7);
   return out;
 }
 
@@ -161,7 +177,6 @@ export class RifeInterpolator {
   private tex0: GpuTexture | null = null;
   private tex1: GpuTexture | null = null;
   private buf0: GpuBuffer | null = null;
-  private buf1: GpuBuffer | null = null;
   private bufOut: GpuBuffer | null = null;
   private rgbaBuf: GpuBuffer | null = null;
   private staging: GpuBuffer | null = null;
@@ -307,14 +322,9 @@ export class RifeInterpolator {
     const padH = pad32(h);
     const t0 = performance.now();
 
-    let rgba: Uint8Array;
-    const packed = await this.tryGpuPack(prev, next, w, h, padW, padH);
-    if (packed) {
-      rgba = await this.runModel(packed.img0, packed.img1, timestep, w, h, padW, padH, packed.gpu);
-    } else {
-      const { img0, img1 } = this.cpuPack(prev, next, w, h, padW, padH);
-      rgba = await this.runModel(img0, img1, timestep, w, h, padW, padH, false);
-    }
+    const packed = await this.tryGpuPack(prev, next, w, h, padW, padH, timestep);
+    const input = packed ?? this.cpuPack(prev, next, w, h, padW, padH, timestep);
+    const rgba = await this.runModel(input.tensor, w, h, padW, padH, input.gpu);
 
     this._lastInferenceMs = performance.now() - t0;
     return rgba;
@@ -362,6 +372,7 @@ export class RifeInterpolator {
     }
     this.releaseGpuBuffers();
 
+    const inBytes = (7 * padW * padH * 4 + 15) & ~15;
     const nchwBytes = (3 * padW * padH * 4 + 15) & ~15;
     const rgbaBytes = (srcW * srcH * 4 + 15) & ~15;
     const texUsage = TEX_BINDING | TEX_COPY_DST | TEX_RENDER;
@@ -377,16 +388,15 @@ export class RifeInterpolator {
       format: 'rgba8unorm',
       usage: texUsage
     });
-    this.buf0 = device.createBuffer({ size: nchwBytes, usage: storageUsage });
-    this.buf1 = device.createBuffer({ size: nchwBytes, usage: storageUsage });
+    this.buf0 = device.createBuffer({ size: inBytes, usage: storageUsage });
     this.bufOut = device.createBuffer({ size: nchwBytes, usage: storageUsage });
     this.rgbaBuf = device.createBuffer({ size: rgbaBytes, usage: storageUsage });
     this.staging = device.createBuffer({
-      size: Math.max(nchwBytes, rgbaBytes),
+      size: Math.max(inBytes, rgbaBytes),
       usage: BUF_MAP_READ | BUF_COPY_DST
     });
     this.uniform = device.createBuffer({
-      size: 16,
+      size: 32,
       usage: BUF_UNIFORM | BUF_COPY_DST
     });
 
@@ -396,8 +406,7 @@ export class RifeInterpolator {
         { binding: 0, resource: this.tex0.createView() },
         { binding: 1, resource: this.tex1.createView() },
         { binding: 2, resource: { buffer: this.buf0 } },
-        { binding: 3, resource: { buffer: this.buf1 } },
-        { binding: 4, resource: { buffer: this.uniform } }
+        { binding: 3, resource: { buffer: this.uniform } }
       ]
     });
     if (this.unpackPipeline) {
@@ -456,18 +465,23 @@ export class RifeInterpolator {
     w: number,
     h: number,
     padW: number,
-    padH: number
-  ): Promise<{ img0: Tensor; img1: Tensor; gpu: boolean } | null> {
+    padH: number,
+    timestep: number
+  ): Promise<{ tensor: Tensor; gpu: boolean } | null> {
     const device = this.device;
     if (!device || !this.packPipeline) return null;
-    if (!this.ensureGpu(w, h, padW, padH) || !this.tex0 || !this.tex1 || !this.buf0 || !this.buf1 || !this.uniform) {
+    if (!this.ensureGpu(w, h, padW, padH) || !this.tex0 || !this.tex1 || !this.buf0 || !this.uniform) {
       return null;
     }
     if (!this.uploadTexture(this.tex0, prev, w, h) || !this.uploadTexture(this.tex1, next, w, h)) {
       return null;
     }
 
-    device.queue.writeBuffer(this.uniform, 0, new Uint32Array([w, h, padW, padH]));
+    const params = new ArrayBuffer(32);
+    new Uint32Array(params, 0, 4).set([w, h, padW, padH]);
+    new Float32Array(params, 16, 1)[0] = timestep;
+    device.queue.writeBuffer(this.uniform, 0, params);
+
     const encoder = device.createCommandEncoder();
     const pass = encoder.beginComputePass();
     pass.setPipeline(this.packPipeline);
@@ -476,25 +490,19 @@ export class RifeInterpolator {
     pass.end();
     device.queue.submit([encoder.finish()]);
 
-    const dims = [1, 3, padH, padW];
+    const dims = [1, 7, padH, padW];
     if (this.gpuTensor) {
       try {
         return {
-          img0: this.ort!.Tensor.fromGpuBuffer(this.buf0 as never, { dataType: 'float32', dims }),
-          img1: this.ort!.Tensor.fromGpuBuffer(this.buf1 as never, { dataType: 'float32', dims }),
+          tensor: this.ort!.Tensor.fromGpuBuffer(this.buf0 as never, { dataType: 'float32', dims }),
           gpu: true
         };
       } catch {
-        /* map pack output into CPU tensors */
+        /* map pack output into a CPU tensor */
       }
     }
-    const floats0 = await this.mapFloats(this.buf0, 3 * padW * padH);
-    const floats1 = await this.mapFloats(this.buf1, 3 * padW * padH);
-    return {
-      img0: new this.ort!.Tensor('float32', floats0, dims),
-      img1: new this.ort!.Tensor('float32', floats1, dims),
-      gpu: false
-    };
+    const floats = await this.mapFloats(this.buf0, 7 * padW * padH);
+    return { tensor: new this.ort!.Tensor('float32', floats, dims), gpu: false };
   }
 
   private cpuPack(
@@ -503,22 +511,22 @@ export class RifeInterpolator {
     w: number,
     h: number,
     padW: number,
-    padH: number
-  ): { img0: Tensor; img1: Tensor } {
+    padH: number,
+    timestep: number
+  ): { tensor: Tensor; gpu: boolean } {
     const canvas = this.ensureCanvas('pack', w, h);
     const ctx = canvas.getContext('2d', { willReadFrequently: true }) as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
     if (!ctx) throw new Error('RIFE canvas unavailable');
     ctx.drawImage(prev as CanvasImageSource, 0, 0, w, h);
-    const img0 = new this.ort!.Tensor('float32', packNchw(ctx.getImageData(0, 0, w, h).data, w, h, padW, padH), [1, 3, padH, padW]);
+    const a = ctx.getImageData(0, 0, w, h).data;
     ctx.drawImage(next as CanvasImageSource, 0, 0, w, h);
-    const img1 = new this.ort!.Tensor('float32', packNchw(ctx.getImageData(0, 0, w, h).data, w, h, padW, padH), [1, 3, padH, padW]);
-    return { img0, img1 };
+    const b = ctx.getImageData(0, 0, w, h).data;
+    const data = pack7(a, b, w, h, padW, padH, timestep);
+    return { tensor: new this.ort!.Tensor('float32', data, [1, 7, padH, padW]), gpu: false };
   }
 
   private async runModel(
-    img0: Tensor,
-    img1: Tensor,
-    timestep: number,
+    input: Tensor,
     w: number,
     h: number,
     padW: number,
@@ -526,19 +534,7 @@ export class RifeInterpolator {
     gpuInputs: boolean
   ): Promise<Uint8Array> {
     const session = this.session!;
-    const t = new this.ort!.Tensor('float32', new Float32Array([timestep]), [1, 1, 1, 1]);
-    const names = session.inputNames;
-    const feeds: Record<string, Tensor> = {};
-    if (names.includes('img0') && names.includes('img1')) {
-      feeds.img0 = img0;
-      feeds.img1 = img1;
-      const tName = names.find((n) => n !== 'img0' && n !== 'img1') ?? 'timestep';
-      feeds[tName] = t;
-    } else {
-      feeds[names[0]] = img0;
-      if (names[1]) feeds[names[1]] = img1;
-      if (names[2]) feeds[names[2]] = t;
-    }
+    const feeds: Record<string, Tensor> = { [session.inputNames[0]]: input };
 
     const fetches = this.prepareFetches(session, padW, padH, gpuInputs);
     const results = fetches
@@ -649,12 +645,12 @@ export class RifeInterpolator {
   }
 
   private releaseGpuBuffers(): void {
-    for (const buf of [this.buf0, this.buf1, this.bufOut, this.rgbaBuf, this.staging, this.uniform]) {
+    for (const buf of [this.buf0, this.bufOut, this.rgbaBuf, this.staging, this.uniform]) {
       try { buf?.destroy(); } catch { /* ignore */ }
     }
     try { this.tex0?.destroy(); } catch { /* ignore */ }
     try { this.tex1?.destroy(); } catch { /* ignore */ }
-    this.buf0 = this.buf1 = this.bufOut = this.rgbaBuf = this.staging = this.uniform = null;
+    this.buf0 = this.bufOut = this.rgbaBuf = this.staging = this.uniform = null;
     this.tex0 = this.tex1 = null;
     this.packGroup = this.unpackGroup = null;
     this.srcW = this.srcH = this.padW = this.padH = 0;

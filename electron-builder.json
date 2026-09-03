@@ -1,0 +1,58 @@
+{
+  "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
+  "appId": "com.opticx.studio",
+  "productName": "Optic X Studio",
+  "directories": {
+    "output": "release"
+  },
+  "publish": null,
+  "files": [
+    "dist/**/*",
+    "package.json",
+    "!dist/**/*.ts",
+    "!dist/**/*.map"
+  ],
+  "extraResources": [
+    {
+      "from": "public/opticx-icon.png",
+      "to": "public/opticx-icon.png"
+    },
+    {
+      "from": "models",
+      "to": "models",
+      "filter": ["*.onnx"]
+    },
+    {
+      "from": "native/opticx-vcam/build/Release/opticx-vcam.dll",
+      "to": "native/opticx-vcam/opticx-vcam.dll"
+    },
+    {
+      "from": "native/opticx-vcam/addon/build/Release/opticx_writer.node",
+      "to": "native/opticx-vcam/opticx_writer.node"
+    },
+    {
+      "from": "native/opticx-fx/build/Release/opticx_fx.node",
+      "to": "native/opticx-fx/opticx_fx.node"
+    },
+    {
+      "from": "native/opticx-fx/build/Release/opticx-fx-host.exe",
+      "to": "native/opticx-fx/opticx-fx-host.exe"
+    }
+  ],
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": ["x64"]
+      }
+    ],
+    "icon": "public/opticx-icon.png"
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "Optic X Studio"
+  }
+}
