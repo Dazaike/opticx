@@ -1,6 +1,6 @@
 {
   "name": "opticx",
-  "version": "1.1.2",
+  "version": "1.1.3",
   "description": "Optic X Studio - High-Performance 4K Camera & Virtual Studio",
   "main": "dist/main/index.js",
   "scripts": {
@@ -14,11 +14,13 @@
     "test:fx": "node scripts/test-opticx-fx.mjs"
   },
   "dependencies": {
+    "motion": "^13.2.0",
     "node-addon-api": "^8.2.2",
     "onnxruntime-web": "1.19.2",
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@electron/rebuild": "^3.7.1",
     "@tailwindcss/postcss": "^4.3.3",
     "@types/node": "^22.5.0",
     "@types/react": "^19.2.18",
@@ -27,7 +29,6 @@
     "@vitejs/plugin-react": "^4.3.1",
     "autoprefixer": "^10.5.4",
     "electron": "^32.0.1",
-    "@electron/rebuild": "^3.7.1",
     "electron-builder": "^24.13.3",
     "lucide-react": "^0.436.0",
     "node-gyp": "^12.4.0",

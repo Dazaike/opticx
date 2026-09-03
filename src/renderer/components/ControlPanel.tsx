@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import {
   Camera,
   Battery,
@@ -21,16 +22,20 @@ import {
   Sparkles,
   Move,
   ChevronDown,
-  ArrowDown
+  ArrowDown,
+  Cpu
 } from 'lucide-react';
 import {
   FilterSettings,
   TransformSettings,
   BatteryInfo,
   OverlayItem,
-  OverlayFilters
+  OverlayFilters,
+  PipelineSettings,
+  PipelineHud
 } from '../../shared/types';
 import opticxIcon from '../../assets/opticx-icon.png';
+import { AiPipelinePanel } from './AiPipelinePanel';
 
 interface ControlPanelProps {
   phoneName: string;
@@ -74,9 +79,16 @@ interface ControlPanelProps {
   selectedOverlayId: string | null;
   onOverlaySelect: (id: string | null) => void;
   focusOverlaysSignal: number;
+  pipeline: PipelineSettings;
+  pipelineHud: PipelineHud;
+  sourceWidth: number;
+  sourceHeight: number;
+  pipelineSafeMode: boolean;
+  onPipelineChange: (next: Partial<PipelineSettings>) => void;
+  onPanicReset: () => void;
 }
 
-type TabType = 'camera' | 'filters' | 'transform' | 'overlays';
+type TabType = 'camera' | 'filters' | 'transform' | 'overlays' | 'ai';
 export const ControlPanel: React.FC<ControlPanelProps> = ({
   phoneName,
   battery,
@@ -118,7 +130,14 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   onOverlayDelete,
   selectedOverlayId,
   onOverlaySelect,
-  focusOverlaysSignal
+  focusOverlaysSignal,
+  pipeline,
+  pipelineHud,
+  sourceWidth,
+  sourceHeight,
+  pipelineSafeMode,
+  onPipelineChange,
+  onPanicReset
 }) => {
   const [activeTab, setActiveTab] = useState<TabType>('camera');
 
@@ -212,58 +231,46 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
           </button>
         </div>
       </div>
-
-      {/* Monochrome Navigation Sub-Tabs */}
-      <div className="flex items-center px-2 pt-2 border-b border-white/[0.08] gap-1 bg-black/20">
-        <button
-          onClick={() => setActiveTab('camera')}
-          className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-medium border-b-2 transition-all duration-200 ${
-            activeTab === 'camera'
-              ? 'border-white text-white font-semibold'
-              : 'border-transparent text-neutral-400 hover:text-neutral-200'
-          }`}
-        >
-          <Settings2 className="w-3.5 h-3.5" />
-          <span>Camera</span>
-        </button>
-        <button
-          onClick={() => setActiveTab('filters')}
-          className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-medium border-b-2 transition-all duration-200 ${
-            activeTab === 'filters'
-              ? 'border-white text-white font-semibold'
-              : 'border-transparent text-neutral-400 hover:text-neutral-200'
-          }`}
-        >
-          <Sparkles className="w-3.5 h-3.5" />
-          <span>Filters</span>
-        </button>
-        <button
-          onClick={() => setActiveTab('transform')}
-          className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-medium border-b-2 transition-all duration-200 ${
-            activeTab === 'transform'
-              ? 'border-white text-white font-semibold'
-              : 'border-transparent text-neutral-400 hover:text-neutral-200'
-          }`}
-        >
-          <Move className="w-3.5 h-3.5" />
-          <span>Transform</span>
-        </button>
-        <button
-          onClick={() => setActiveTab('overlays')}
-          className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-medium border-b-2 transition-all duration-200 ${
-            activeTab === 'overlays'
-              ? 'border-white text-white font-semibold'
-              : 'border-transparent text-neutral-400 hover:text-neutral-200'
-          }`}
-        >
-          <Layers className="w-3.5 h-3.5" />
-          <span className="relative">
-            Overlays
-            {overlays.length > 0 && (
-              <span className="absolute -top-0.5 -right-2 w-1.5 h-1.5 rounded-full bg-white" />
-            )}
-          </span>
-        </button>
+      {/* KokonutUI Segmented Navigation Sub-Tabs */}
+      <div className="flex items-center p-1 mx-3 mt-2 rounded-xl bg-neutral-900/60 border border-white/[0.08] relative">
+        {(
+          [
+            { id: 'camera', label: 'Camera', icon: Settings2 },
+            { id: 'filters', label: 'Filters', icon: Sparkles },
+            { id: 'transform', label: 'Transform', icon: Move },
+            { id: 'overlays', label: 'Overlays', icon: Layers, badge: overlays.length > 0 },
+            { id: 'ai', label: 'AI', icon: Cpu }
+          ] as const
+        ).map((tab) => {
+          const isActive = activeTab === tab.id;
+          const Icon = tab.icon;
+          return (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`relative flex-1 flex items-center justify-center gap-1 py-1.5 text-[11px] font-medium transition-colors z-10 select-none rounded-lg ${
+                isActive ? 'text-black font-semibold' : 'text-neutral-400 hover:text-neutral-200'
+              }`}
+            >
+              {isActive && (
+                <motion.div
+                  layoutId="sidebarActiveTabPill"
+                  transition={{ type: 'spring', stiffness: 480, damping: 36 }}
+                  className="absolute inset-0 bg-white rounded-lg shadow-[0_2px_10px_rgba(255,255,255,0.25)]"
+                />
+              )}
+              <span className="relative z-10 flex items-center gap-1">
+                <Icon className="w-3 h-3 shrink-0" />
+                <span>{tab.label}</span>
+                {'badge' in tab && tab.badge && (
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full ${isActive ? 'bg-black' : 'bg-white shadow-[0_0_4px_rgba(255,255,255,0.8)]'}`}
+                  />
+                )}
+              </span>
+            </button>
+          );
+        })}
       </div>
 
       {/* Main Tab Content Viewport with Motion */}
@@ -424,16 +431,15 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
               </button>
             </div>
 
-            {/* Convolution Sharpen */}
             <div className="space-y-1.5 bg-black/40 p-2.5 rounded-lg border border-white/[0.06]">
               <div className="flex justify-between text-xs">
-                <span className="text-neutral-200 font-medium">Convolution Sharpen</span>
+                <span className="text-neutral-200 font-medium">RCAS Sharpen</span>
                 <span className="font-mono text-white font-semibold">{filters.sharpen.toFixed(2)}</span>
               </div>
               <input
                 type="range"
                 min="0"
-                max="5"
+                max="1"
                 step="0.02"
                 value={filters.sharpen}
                 onChange={(e) => onFilterChange({ sharpen: parseFloat(e.target.value) })}
@@ -871,19 +877,41 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
             )}
           </div>
         )}
+
+        {activeTab === 'ai' && (
+          <AiPipelinePanel
+            pipeline={pipeline}
+            hud={pipelineHud}
+            sourceWidth={sourceWidth}
+            sourceHeight={sourceHeight}
+            safeMode={pipelineSafeMode}
+            onChange={onPipelineChange}
+            onPanicReset={onPanicReset}
+          />
+        )}
       </div>
 
       {/* Persistent Virtual Camera Monochrome Output Deck */}
+      {/* Persistent Virtual Camera Output Deck with KokonutUI animated pulse beacon */}
       <div className="p-4 border-t border-white/[0.08] bg-black/50 space-y-2.5">
         <div className="flex items-center justify-between text-xs">
           <div className="flex items-center gap-2">
-            <span
-              className={`w-2 h-2 rounded-full transition-all duration-300 ${
-                vcamActive
-                  ? 'bg-white shadow-[0_0_8px_rgba(255,255,255,0.9)] animate-pulse-subtle'
-                  : 'bg-neutral-600'
-              }`}
-            />
+            <div className="relative flex items-center justify-center w-2 h-2">
+              {vcamActive && (
+                <motion.span
+                  className="absolute w-4 h-4 rounded-full bg-white/40"
+                  animate={{ scale: [1, 1.8, 2.2], opacity: [0.8, 0.3, 0] }}
+                  transition={{ repeat: Infinity, duration: 1.8, ease: 'easeOut' }}
+                />
+              )}
+              <span
+                className={`w-2 h-2 rounded-full transition-all duration-300 ${
+                  vcamActive
+                    ? 'bg-white shadow-[0_0_8px_rgba(255,255,255,0.9)]'
+                    : 'bg-neutral-600'
+                }`}
+              />
+            </div>
             <span className="font-semibold text-neutral-200">Optic X Virtual Cam</span>
           </div>
           <span className="text-[10px] font-mono text-neutral-400">
@@ -891,9 +919,11 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
           </span>
         </div>
 
-        <button
+        <motion.button
+          whileHover={{ scale: 1.01 }}
+          whileTap={{ scale: 0.98 }}
           onClick={onVcamToggle}
-          className={`w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-lg text-xs font-semibold border transition-all duration-200 active:scale-[0.98] ${
+          className={`w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-lg text-xs font-semibold border transition-all duration-200 ${
             vcamActive
               ? 'bg-white/10 hover:bg-white/15 text-white border-white/20'
               : 'bg-white hover:bg-neutral-200 text-black border-transparent shadow-[0_0_16px_rgba(255,255,255,0.2)]'
@@ -901,8 +931,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
         >
           {vcamActive ? <VideoOff className="w-4 h-4" /> : <Video className="w-4 h-4" />}
           <span>{vcamActive ? 'Stop Broadcast' : 'Broadcast Virtual Cam'}</span>
-        </button>
-
+        </motion.button>
         {vcamError && (
           <div className="text-[10px] text-neutral-300 bg-white/[0.05] border border-white/15 rounded px-2 py-1 font-mono">
             {vcamError}

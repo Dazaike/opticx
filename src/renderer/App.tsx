@@ -1,7 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import { H264Decoder } from './decoder';
 import { WebGLRenderer } from './webgl-renderer';
 import { Nv12Encoder } from './nv12-encoder';
+import { FrameScheduler } from './frame-scheduler';
+import { PipelineRunner } from './pipeline-runtime';
 import { ControlPanel } from './components/ControlPanel';
 import { playDingSound } from './audio';
 import opticxIcon from '../assets/opticx-icon.png';
@@ -124,6 +127,8 @@ export const App: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const rendererRef = useRef<WebGLRenderer | null>(null);
   const decoderRef = useRef<H264Decoder | null>(null);
+  const schedulerRef = useRef(new FrameScheduler<VideoFrame>(3));
+  const pipelineRunnerRef = useRef(new PipelineRunner());
   const wsRef = useRef<WebSocket | null>(null);
   const encoderRef = useRef<Nv12Encoder | null>(null);
   const vcamActiveRef = useRef<boolean>(false);
@@ -306,58 +311,167 @@ export const App: React.FC = () => {
     const encoder = gl ? new Nv12Encoder(gl) : null;
     encoderRef.current = encoder;
 
-    const decoder = new H264Decoder((frame: VideoFrame) => {
-      renderer.render(frame, filtersRef.current, transformRef.current);
-      if (!quadSeededRef.current) {
-        quadSeededRef.current = true;
-        setCameraQuad(renderer.getContentQuadNdc());
-        setCenterQuad(renderer.getCenterQuadNdc(transformRef.current));
+    const scheduler = schedulerRef.current;
+    const sourceStats = { n: 0, t: performance.now(), fps: 0 };
+    const outputStats = { n: 0, t: performance.now(), fps: 0 };
+    let hudLast = 0;
+
+    const tickRate = (stats: { n: number; t: number; fps: number }, now: number): number => {
+      stats.n++;
+      const dt = now - stats.t;
+      if (dt >= 500) {
+        stats.fps = (stats.n * 1000) / dt;
+        stats.n = 0;
+        stats.t = now;
+      }
+      return stats.fps;
+    };
+
+    const encodeVcam = (): void => {
+      if (
+        !vcamActiveRef.current ||
+        !encoder ||
+        encodeBusyRef.current ||
+        isDraggingRef.current ||
+        overlayDragRef.current
+      ) {
+        return;
+      }
+      const now = performance.now();
+      if (now - lastVcamSendRef.current < 1000 / fpsRef.current - 2) return;
+      lastVcamSendRef.current = now;
+      encodeBusyRef.current = true;
+      const filters = filtersRef.current;
+      const transform = transformRef.current;
+      const hasOverlays = overlaysRef.current.some((o) => o.visible) && !document.hidden;
+      setTimeout(() => {
+        try {
+          if (hasOverlays) {
+            const composition = composeVirtualFrame();
+            if (composition) {
+              window.electronAPI.sendVcamFrame(
+                encoder.encode(composition, composition.width, composition.height)
+              );
+            }
+          } else {
+            const texture = renderer.renderBroadcast(filters, transform);
+            if (texture) {
+              window.electronAPI.sendVcamFrame(encoder.encodeTexture(texture, 3840, 2160));
+            }
+          }
+        } finally {
+          encodeBusyRef.current = false;
+        }
+      }, 0);
+    };
+
+    let aiBusy = false;
+    const present = (nowMs: number): void => {
+      const frame = scheduler.acquireForPresent(nowMs * 1000, 1e6 / 60);
+      if (!frame) {
+        encodeVcam();
+        return;
       }
 
-      if (
-        vcamActiveRef.current &&
-        encoder &&
-        !encodeBusyRef.current &&
-        !isDraggingRef.current &&
-        !overlayDragRef.current
-      ) {
-        const now = performance.now();
-        if (now - lastVcamSendRef.current >= 1000 / fpsRef.current - 2) {
-          lastVcamSendRef.current = now;
-          encodeBusyRef.current = true;
-          const filters = filtersRef.current;
-          const transform = transformRef.current;
-          const hasOverlays = overlaysRef.current.some((o) => o.visible) && !document.hidden;
-          // Deferred via setTimeout (not requestAnimationFrame, which the
-          // browser suspends while minimized) so the synchronous GPU
-          // readback in encode/encodeTexture never runs inline inside the
-          // VideoDecoder output callback. Blocking that callback stalls
-          // decode of subsequent frames, and the backlog compounds the
-          // longer broadcast stays active -> ever-growing latency.
-          setTimeout(() => {
-            try {
-              if (hasOverlays) {
-                const composition = composeVirtualFrame();
-                if (composition) {
-                  window.electronAPI.sendVcamFrame(
-                    encoder.encode(composition, composition.width, composition.height)
-                  );
-                }
-              } else {
-                const texture = renderer.renderBroadcast(filters, transform);
-                if (texture) {
-                  window.electronAPI.sendVcamFrame(encoder.encodeTexture(texture, 3840, 2160));
-                }
-              }
-            } finally {
-              encodeBusyRef.current = false;
-            }
-          }, 0);
+      const pipe = pipelineRef.current;
+      const aiOn =
+        pipe.artifactReduction.enabled ||
+        pipe.denoise.enabled ||
+        pipe.superRes.enabled ||
+        pipe.fastUpscale.enabled ||
+        pipe.rife.enabled;
+
+      const finishHud = (timestamp: number, extra?: Partial<PipelineHud>) => {
+        const outFps = tickRate(outputStats, nowMs);
+        if (!quadSeededRef.current) {
+          quadSeededRef.current = true;
+          setCameraQuad(renderer.getContentQuadNdc());
+          setCenterQuad(renderer.getCenterQuadNdc(transformRef.current));
         }
+        if (nowMs - hudLast >= 400) {
+          hudLast = nowMs;
+          setPipelineHud((prev) => ({
+            ...prev,
+            sourceFps: sourceStats.fps,
+            outputFps: outFps,
+            droppedFrames: scheduler.dropped,
+            e2eLatencyMs: Math.max(0, nowMs - timestamp / 1000),
+            ...extra,
+            stageMs: { ...prev.stageMs, ...extra?.stageMs }
+          }));
+        }
+      };
+
+      if (!aiOn || aiBusy) {
+        renderer.render(frame, filtersRef.current, transformRef.current, {
+          fsr: pipe.fsr.enabled
+        });
+        finishHud(frame.timestamp);
+        frame.close();
+        encodeVcam();
+        return;
       }
-      frame.close();
+
+      aiBusy = true;
+      void pipelineRunnerRef.current
+        .process(frame, pipe)
+        .then((out) => {
+          const fsr = { fsr: pipelineRef.current.fsr.enabled };
+          for (const produced of out.frames) {
+            renderer.renderRgba(
+              produced.rgba,
+              produced.width,
+              produced.height,
+              filtersRef.current,
+              transformRef.current,
+              fsr
+            );
+          }
+          finishHud(out.frames[out.frames.length - 1]?.timestamp ?? nowMs * 1000, {
+            stageMs: {
+              artifactReduction: out.stageMs.artifactReduction ?? 0,
+              denoise: out.stageMs.denoise ?? 0,
+              rife: out.stageMs.rife ?? 0,
+              superRes: out.stageMs.superRes ?? 0,
+              upscale: out.stageMs.upscale ?? 0,
+              fsr: 0,
+              nv12: 0
+            },
+            errors: out.errors,
+            totalGpuMs: Object.values(out.stageMs).reduce((a, b) => a + (b ?? 0), 0)
+          });
+          if (out.disable.length > 0) {
+            setPipeline((prev) => {
+              const next = { ...prev };
+              for (const id of out.disable) {
+                next[id] = { ...next[id], enabled: false } as never;
+              }
+              return next;
+            });
+          }
+          encodeVcam();
+        })
+        .catch((err) => {
+          console.error('AI pipeline error:', err);
+        })
+        .finally(() => {
+          aiBusy = false;
+        });
+    };
+
+    const decoder = new H264Decoder((frame: VideoFrame) => {
+      tickRate(sourceStats, performance.now());
+      scheduler.push(frame);
     });
     decoderRef.current = decoder;
+
+    let rafId = requestAnimationFrame(function onRaf(t) {
+      present(t);
+      rafId = requestAnimationFrame(onRaf);
+    });
+    const hiddenTimer = window.setInterval(() => {
+      if (document.hidden) present(performance.now());
+    }, 16);
 
     const handlePaste = (e: ClipboardEvent) => {
       const items = e.clipboardData?.items;
@@ -447,8 +561,10 @@ export const App: React.FC = () => {
     window.addEventListener('resize', handleResize);
     const stageObserver = new ResizeObserver(handleResize);
     if (stageRef.current) stageObserver.observe(stageRef.current);
-
     return () => {
+      cancelAnimationFrame(rafId);
+      window.clearInterval(hiddenTimer);
+      scheduler.clear();
       window.removeEventListener('paste', handlePaste);
       window.removeEventListener('resize', handleResize);
       stageObserver.disconnect();
@@ -530,6 +646,81 @@ export const App: React.FC = () => {
     if (!pipelineHydratedRef.current) return;
     void window.electronAPI.pipelineSave(pipeline);
   }, [pipeline]);
+
+  useEffect(() => {
+    const needFx =
+      pipeline.artifactReduction.enabled ||
+      pipeline.denoise.enabled ||
+      pipeline.superRes.enabled ||
+      pipeline.fastUpscale.enabled;
+    if (!needFx) return;
+    let cancelled = false;
+    void (async () => {
+      const started = await window.electronAPI.fxStart();
+      if (cancelled) return;
+      setPipelineHud((prev) => ({ ...prev, fxReady: started.ok }));
+      if (!started.ok) {
+        setPipelineHud((prev) => ({
+          ...prev,
+          errors: { ...prev.errors, artifactReduction: started.error }
+        }));
+        return;
+      }
+      const configured = await window.electronAPI.fxConfigure({
+        artifactReduction: pipeline.artifactReduction,
+        denoise: pipeline.denoise,
+        superRes: pipeline.superRes,
+        fastUpscale: pipeline.fastUpscale
+      });
+      if (cancelled || configured.ok) return;
+      setPipelineHud((prev) => ({
+        ...prev,
+        errors: { ...prev.errors, superRes: configured.error }
+      }));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [pipeline]);
+
+  useEffect(() => {
+    if (!pipeline.rife.enabled) return;
+    let cancelled = false;
+    void (async () => {
+      const model = await window.electronAPI.fxModel();
+      if (cancelled) return;
+      if (!model.ok || !model.data) {
+        setPipelineHud((prev) => ({
+          ...prev,
+          rifeModelReady: false,
+          errors: { ...prev.errors, rife: model.error ?? 'model not downloaded' }
+        }));
+        return;
+      }
+      const bytes = model.data instanceof Uint8Array ? model.data : new Uint8Array(model.data as ArrayBuffer);
+      const copy = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      try {
+        await pipelineRunnerRef.current.rife.init(copy);
+        pipelineRunnerRef.current.rife.sensitivity = pipeline.rife.sensitivity;
+        if (cancelled) return;
+        setPipelineHud((prev) => ({
+          ...prev,
+          rifeModelReady: true,
+          errors: { ...prev.errors, rife: undefined }
+        }));
+      } catch (err) {
+        if (cancelled) return;
+        setPipelineHud((prev) => ({
+          ...prev,
+          rifeModelReady: false,
+          errors: { ...prev.errors, rife: err instanceof Error ? err.message : String(err) }
+        }));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [pipeline.rife.enabled]);
 
   const [resolution, setResolution] = useState<string>('3840x2160');
 
@@ -616,7 +807,10 @@ export const App: React.FC = () => {
         wsRef.current = null;
       }
       decoderRef.current?.reset();
+      schedulerRef.current.clear();
       rendererRef.current?.clear();
+      void window.electronAPI.fxResetTemporal();
+      pipelineRunnerRef.current.reset();
       setIsConnected(false);
     } catch (err) {
       console.error('Disconnect error:', err);
@@ -1056,10 +1250,16 @@ export const App: React.FC = () => {
       {/* Primary Workspace: Full-Bleed Video Canvas */}
       <div className="flex-1 relative flex flex-col h-full overflow-hidden bg-black">
         {/* Floating Monochrome Minimal HUD */}
-        <header className="absolute top-4 left-4 right-4 z-30 flex items-center justify-between pointer-events-none animate-hud-enter">
-          <div className="glass-pill px-3.5 py-2 rounded-full flex items-center gap-3 pointer-events-auto">
+        {/* Floating Monochrome Minimal HUD with KokonutUI Spring Physics */}
+        <motion.header
+          initial={{ y: -24, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+          transition={{ type: 'spring', stiffness: 350, damping: 28 }}
+          className="absolute top-4 left-4 right-4 z-30 flex items-center justify-between pointer-events-none"
+        >
+          <div className="glass-pill px-3.5 py-2 rounded-full flex items-center gap-3 pointer-events-auto shadow-[0_4px_20px_rgba(0,0,0,0.5)]">
             <div className="flex items-center gap-2">
-              <img src={opticxIcon} alt="OpticX" className="w-4 h-4 rounded object-cover" />
+              <img src={opticxIcon} alt="OpticX" className="w-4 h-4 rounded object-cover shadow-sm" />
               <span className="font-bold text-xs tracking-widest text-white font-mono">Optic X Studio</span>
             </div>
             <div className="h-3 w-[1px] bg-white/10" />
@@ -1074,130 +1274,183 @@ export const App: React.FC = () => {
               <>
                 <div className="h-3 w-[1px] bg-white/10" />
                 <div className="flex items-center gap-1.5 text-[10px] font-mono tracking-wider text-white">
-                  <span className="w-1.5 h-1.5 rounded-full bg-white shadow-[0_0_6px_rgba(255,255,255,0.9)]" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-white shadow-[0_0_6px_rgba(255,255,255,0.9)] animate-pulse" />
                   <span>BROADCASTING</span>
                 </div>
               </>
             )}
           </div>
 
-          <div className="glass-pill px-2 py-1.5 rounded-full flex items-center gap-1 pointer-events-auto">
-            <button
+          <div className="glass-pill px-2 py-1.5 rounded-full flex items-center gap-1 pointer-events-auto shadow-[0_4px_20px_rgba(0,0,0,0.5)]">
+            <motion.button
+              whileHover={{ scale: 1.08 }}
+              whileTap={{ scale: 0.92 }}
               onClick={() =>
                 setTransform((prev) => ({ ...prev, rotation: (prev.rotation + 90) % 360 }))
               }
               title="Rotate 90°"
-              className="p-2 rounded-full hover:bg-white/10 text-neutral-300 hover:text-white transition-all duration-150 active:rotate-90"
+              className="p-2 rounded-full hover:bg-white/10 text-neutral-300 hover:text-white transition-colors"
             >
               <RotateCw className="w-4 h-4" />
-            </button>
-            <button
+            </motion.button>
+            <motion.button
+              whileHover={{ scale: 1.08 }}
+              whileTap={{ scale: 0.92 }}
               onClick={() => setShowGrid((g) => !g)}
               title="Toggle Alignment Grid"
-              className={`p-2 rounded-full transition-colors duration-150 ${
+              className={`p-2 rounded-full transition-colors ${
                 showGrid ? 'bg-white text-black' : 'hover:bg-white/10 text-neutral-300 hover:text-white'
               }`}
             >
               <Crosshair className="w-4 h-4" />
-            </button>
-            {/* Camera Timer & Shutter Control Deck */}
+            </motion.button>
+            {/* Camera Timer & Shutter Control Deck with Spring Animations */}
             <div ref={timerMenuRef} className="relative flex items-center">
-              {isCountingDown && countdown !== null ? (
-                <div
-                  onClick={cancelCountdown}
-                  title="Click to cancel timer"
-                  className="flex items-center justify-center gap-2 min-w-[76px] h-8 px-3.5 bg-neutral-900/90 border border-white/20 rounded-full cursor-pointer hover:bg-neutral-800/90 transition-all duration-150 select-none shadow-[0_0_16px_rgba(0,0,0,0.5)] animate-simple-fade ml-1"
-                >
-                  <span className="w-2.5 h-2.5 rounded-full bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.9)] animate-pulse shrink-0" />
-                  <span
-                    key={countdown}
-                    className="text-sm font-mono font-bold text-white tracking-widest animate-countdown-number inline-block min-w-[14px] text-center"
+              <AnimatePresence mode="wait">
+                {isCountingDown && countdown !== null ? (
+                  <motion.div
+                    key="countdown-pill"
+                    initial={{ scale: 0.85, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    exit={{ scale: 0.85, opacity: 0 }}
+                    transition={{ type: 'spring', stiffness: 400, damping: 28 }}
+                    onClick={cancelCountdown}
+                    title="Click to cancel timer"
+                    className="flex items-center justify-center gap-2 min-w-[76px] h-8 px-3.5 bg-neutral-900/90 border border-white/20 rounded-full cursor-pointer hover:bg-neutral-800/90 transition-colors select-none shadow-[0_0_16px_rgba(0,0,0,0.5)] ml-1"
                   >
-                    {countdown}
-                  </span>
-                </div>
-              ) : (
-                <div className="flex items-center gap-1.5 transition-all duration-300 ease-out">
-                  <button
-                    onClick={handleCameraButtonClick}
-                    title={
-                      !timerMenuOpen
-                        ? 'Snap Photo / Open Timer Menu'
-                        : activeTimer !== null
-                        ? `Start ${activeTimer}s Timed Photo`
-                        : 'Take Instant Photo'
-                    }
-                    className={`flex items-center justify-center rounded-full font-semibold text-xs transition-all duration-200 active:scale-95 ${
-                      timerMenuOpen
-                        ? `w-8 h-8 p-0 bg-white text-black ${
-                            activeTimer !== null
-                              ? 'shadow-[0_0_12px_2px_rgba(255,255,255,0.7)]'
-                              : 'shadow-[0_0_8px_rgba(255,255,255,0.3)] hover:bg-neutral-200'
-                          }`
-                        : 'h-8 px-3.5 gap-1.5 bg-white hover:bg-neutral-200 text-black shadow-[0_0_12px_rgba(255,255,255,0.25)] ml-0.5'
-                    }`}
+                    <span className="w-2.5 h-2.5 rounded-full bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.9)] animate-pulse shrink-0" />
+                    <AnimatePresence mode="popLayout">
+                      <motion.span
+                        key={countdown}
+                        initial={{ y: -8, opacity: 0, scale: 1.2, filter: 'blur(3px)' }}
+                        animate={{ y: 0, opacity: 1, scale: 1, filter: 'blur(0px)' }}
+                        exit={{ y: 8, opacity: 0, scale: 0.85, filter: 'blur(3px)' }}
+                        transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+                        className="text-sm font-mono font-bold text-white tracking-widest inline-block min-w-[14px] text-center"
+                      >
+                        {countdown}
+                      </motion.span>
+                    </AnimatePresence>
+                  </motion.div>
+                ) : (
+                  <motion.div
+                    key="camera-deck"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    className="flex items-center gap-1.5"
                   >
-                    <Camera className="w-3.5 h-3.5 shrink-0" />
-                    {!timerMenuOpen && <span className="text-xs font-semibold leading-none">Snap</span>}
-                  </button>
+                    <motion.button
+                      layout
+                      whileHover={{ scale: 1.04 }}
+                      whileTap={{ scale: 0.92 }}
+                      transition={{ type: 'spring', stiffness: 500, damping: 35 }}
+                      onClick={handleCameraButtonClick}
+                      title={
+                        !timerMenuOpen
+                          ? 'Snap Photo / Open Timer Menu'
+                          : activeTimer !== null
+                          ? `Start ${activeTimer}s Timed Photo`
+                          : 'Take Instant Photo'
+                      }
+                      className={`flex items-center justify-center rounded-full font-semibold text-xs transition-colors ${
+                        timerMenuOpen
+                          ? `w-8 h-8 p-0 bg-white text-black ${
+                              activeTimer !== null
+                                ? 'shadow-[0_0_12px_2px_rgba(255,255,255,0.7)]'
+                                : 'shadow-[0_0_8px_rgba(255,255,255,0.3)] hover:bg-neutral-200'
+                            }`
+                          : 'h-8 px-3.5 gap-1.5 bg-white hover:bg-neutral-200 text-black shadow-[0_0_12px_rgba(255,255,255,0.25)] ml-0.5'
+                      }`}
+                    >
+                      <Camera className="w-3.5 h-3.5 shrink-0" />
+                      {!timerMenuOpen && <span className="text-xs font-semibold leading-none">Snap</span>}
+                    </motion.button>
 
-                  <div
-                    className={`flex items-center gap-1.5 transition-all duration-300 ease-out ${
-                      timerMenuOpen
-                        ? 'max-w-[200px] opacity-100 ml-1'
-                        : 'max-w-0 opacity-0 pointer-events-none overflow-hidden'
-                    }`}
-                  >
-                    {([3, 5, 10] as const).map((secs, idx) => {
-                      const isActive = activeTimer === secs;
-                       return (
-                         <button
-                           key={secs}
-                           onClick={() => handleTimerSelect(secs)}
-                           title={`${secs} seconds timer`}
-                           style={{
-                             animationDelay: timerMenuOpen ? `${idx * 45}ms` : '0ms'
-                           }}
-                          className={`h-8 px-3 rounded-full text-xs font-mono font-medium transition-all duration-150 flex items-center justify-center select-none ${
-                            timerMenuOpen ? 'animate-timer-enter' : ''
-                          } ${
-                            isActive
-                              ? 'bg-white text-black font-bold border border-white shadow-[0_0_12px_rgba(255,255,255,0.6)]'
-                              : 'bg-white/10 hover:bg-white/20 text-neutral-300 hover:text-white border border-white/10'
-                          }`}
+                    <AnimatePresence>
+                      {timerMenuOpen && (
+                        <motion.div
+                          initial={{ width: 0, opacity: 0, scale: 0.9 }}
+                          animate={{ width: 'auto', opacity: 1, scale: 1 }}
+                          exit={{ width: 0, opacity: 0, scale: 0.9 }}
+                          transition={{ type: 'spring', stiffness: 450, damping: 32 }}
+                          className="flex items-center gap-1.5 overflow-hidden ml-1"
                         >
-                          {secs}s
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
+                          {([3, 5, 10] as const).map((secs) => {
+                            const isActive = activeTimer === secs;
+                            return (
+                              <motion.button
+                                key={secs}
+                                layout
+                                whileHover={{ scale: 1.08 }}
+                                whileTap={{ scale: 0.94 }}
+                                onClick={() => handleTimerSelect(secs)}
+                                title={`${secs} seconds timer`}
+                                className={`h-8 px-3 rounded-full text-xs font-mono font-medium transition-colors flex items-center justify-center select-none ${
+                                  isActive
+                                    ? 'bg-white text-black font-bold border border-white shadow-[0_0_12px_rgba(255,255,255,0.6)]'
+                                    : 'bg-white/10 hover:bg-white/20 text-neutral-300 hover:text-white border border-white/10'
+                                }`}
+                              >
+                                {secs}s
+                              </motion.button>
+                            );
+                          })}
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
             <div className="h-4 w-[1px] bg-white/10 mx-0.5" />
-            <button
+            <motion.button
+              whileHover={{ scale: 1.08 }}
+              whileTap={{ scale: 0.92 }}
               onClick={() => setSidebarOpen((open) => !open)}
               title={sidebarOpen ? 'Collapse Studio Controls' : 'Expand Studio Controls'}
-              className="p-2 rounded-full hover:bg-white/10 text-neutral-300 hover:text-white transition-colors duration-150"
+              className="p-2 rounded-full hover:bg-white/10 text-neutral-300 hover:text-white transition-colors"
             >
               {sidebarOpen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
-            </button>
+            </motion.button>
           </div>
-        </header>
+        </motion.header>
 
-        {/* Minimalist Saved Feedback Toast */}
-        {snapSavedFeedback && (
-          <div className="absolute top-20 left-1/2 z-40 glass-pill px-4 py-2 rounded-xl flex items-center gap-2.5 text-xs font-mono text-white border-white/20 shadow-2xl animate-fade-in-up pointer-events-none">
-            <Check className="w-4 h-4 text-white shrink-0" />
-            <span>SAVED TO DOWNLOADS &amp; CLIPBOARD</span>
-          </div>
-        )}
+        {/* Minimalist KokonutUI Saved Feedback Toast */}
+        <AnimatePresence>
+          {snapSavedFeedback && (
+            <motion.div
+              initial={{ opacity: 0, y: -20, scale: 0.9 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -15, scale: 0.95 }}
+              transition={{ type: 'spring', stiffness: 420, damping: 28 }}
+              className="absolute top-20 left-1/2 -translate-x-1/2 z-40 glass-pill px-4 py-2.5 rounded-2xl flex items-center gap-2.5 text-xs font-mono text-white border border-white/20 shadow-[0_8px_32px_rgba(0,0,0,0.5),0_0_16px_rgba(255,255,255,0.15)] pointer-events-none"
+            >
+              <motion.div
+                initial={{ rotate: -45, scale: 0 }}
+                animate={{ rotate: 0, scale: 1 }}
+                transition={{ type: 'spring', stiffness: 500, damping: 25, delay: 0.05 }}
+              >
+                <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+              </motion.div>
+              <span className="tracking-wide">SAVED TO DOWNLOADS &amp; CLIPBOARD</span>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
-        {lowBatteryWarning && (
-          <div className="absolute top-20 left-1/2 z-40 px-4 py-2 rounded-xl flex items-center gap-2.5 text-xs font-mono text-red-100 bg-red-600/90 border border-red-400 shadow-2xl animate-fade-in-up pointer-events-none">
-            <span>LOW BATTERY — {battery?.level ?? 0}%</span>
-          </div>
-        )}
+        <AnimatePresence>
+          {lowBatteryWarning && (
+            <motion.div
+              initial={{ opacity: 0, y: -20, scale: 0.9 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -15, scale: 0.95 }}
+              transition={{ type: 'spring', stiffness: 420, damping: 28 }}
+              className="absolute top-20 left-1/2 -translate-x-1/2 z-40 px-4 py-2 rounded-xl flex items-center gap-2.5 text-xs font-mono text-red-100 bg-red-600/90 border border-red-400 shadow-2xl pointer-events-none"
+            >
+              <span>LOW BATTERY — {battery?.level ?? 0}%</span>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
 
         {/* Video Canvas Stage */}
@@ -1212,21 +1465,36 @@ export const App: React.FC = () => {
           onDoubleClick={handleDoubleClick}
         >
           {/* Shutter Flash Overlay */}
-          {shutterFlash && (
-            <div className="absolute inset-0 z-50 pointer-events-none bg-white animate-shutter-flash" />
-          )}
+          {/* KokonutUI Cinematic Shutter Flash Overlay */}
+          <AnimatePresence>
+            {shutterFlash && (
+              <motion.div
+                initial={{ opacity: 0.95 }}
+                animate={{ opacity: 0 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.35, ease: 'easeOut' }}
+                className="absolute inset-0 z-50 pointer-events-none bg-white"
+              />
+            )}
+          </AnimatePresence>
 
-          {/* Cinematic Viewfinder Countdown Overlay - Centered on Camera Stage */}
-          {isCountingDown && countdown !== null && countdown > 0 && (
-            <div className="absolute inset-0 z-40 pointer-events-none flex items-center justify-center select-none">
-              <div
-                key={countdown}
-                className="text-8xl md:text-9xl font-mono font-black text-white drop-shadow-[0_0_50px_rgba(255,255,255,0.85)] animate-countdown-number"
-              >
-                {countdown}
+          {/* Cinematic Viewfinder Countdown Overlay with Motion Pop/Blur */}
+          <AnimatePresence mode="popLayout">
+            {isCountingDown && countdown !== null && countdown > 0 && (
+              <div className="absolute inset-0 z-40 pointer-events-none flex items-center justify-center select-none">
+                <motion.div
+                  key={countdown}
+                  initial={{ scale: 1.35, opacity: 0, filter: 'blur(16px)' }}
+                  animate={{ scale: 1, opacity: 1, filter: 'blur(0px)' }}
+                  exit={{ scale: 0.7, opacity: 0, filter: 'blur(16px)' }}
+                  transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
+                  className="text-8xl md:text-9xl font-mono font-black text-white drop-shadow-[0_0_60px_rgba(255,255,255,0.9)]"
+                >
+                  {countdown}
+                </motion.div>
               </div>
-            </div>
-          )}
+            )}
+          </AnimatePresence>
           <div
             ref={editorFrameRef}
             className="relative bg-[#1c1c1c] shadow-2xl rounded-sm overflow-hidden"
@@ -1477,76 +1745,87 @@ export const App: React.FC = () => {
           </div>
         </div>
       </div>
-      {sidebarOpen && (
-        <ControlPanel
-          phoneName={phoneName}
-          battery={battery}
-          batteryTrend={batteryTrend}
-          isConnected={isConnected}
-          filters={filters}
-          transform={transform}
-          overlays={overlays}
-          resolution={resolution}
-          onResolutionChange={handleResolutionChange}
-          switchingRes={switchingRes}
-          fps={fps}
-          onFpsChange={handleFpsChange}
-          zoom={zoom}
-          zoomRange={zoomRange}
-          ev={ev}
-          evRange={evRange}
-          torch={torch}
-          activeCamera={activeCamera}
-          cameras={cameras}
-          onConnect={() => handleConnect()}
-          onDisconnect={handleDisconnect}
-          onFilterChange={(newFilters) => setFilters((prev) => ({ ...prev, ...newFilters }))}
-          onResetFilters={() => setFilters({ ...DEFAULT_FILTERS })}
-          onTransformChange={(newT) => setTransform((prev) => ({ ...prev, ...newT }))}
-          onResetTransform={() => setTransform({ ...DEFAULT_TRANSFORM })}
-          onSnapCenter={handleSnapCenter}
-          onZoomChange={handleZoomChange}
-          onEvChange={handleEvChange}
-          onTorchToggle={handleTorchToggle}
-          onAutofocus={handleAutofocus}
-          onCameraChange={handleCameraChange}
-          onCaptureScreenshot={handleCaptureScreenshot}
-          vcamActive={vcamActive}
-          vcamFrames={vcamFrames}
-          vcamError={vcamError}
-          onVcamToggle={handleVcamToggle}
-          onOverlayUpdate={(id, update) =>
-            setOverlays((prev) => prev.map((o) => (o.id === id ? { ...o, ...update } : o)))
-          }
-          onOverlayDelete={(id) => {
-            setOverlays((prev) => prev.filter((o) => o.id !== id));
-            setSelectedOverlayId(null);
-          }}
-          selectedOverlayId={selectedOverlayId}
-          onOverlaySelect={setSelectedOverlayId}
-          focusOverlaysSignal={focusOverlaysSignal}
-          pipeline={pipeline}
-          pipelineHud={pipelineHud}
-          sourceWidth={parseInt(resolution.split('x')[0], 10) || 1920}
-          sourceHeight={parseInt(resolution.split('x')[1], 10) || 1080}
-          pipelineSafeMode={pipelineSafeMode}
-          onPipelineChange={(next) => {
-            setPipeline((prev) => ({ ...prev, ...next }));
-            void window.electronAPI.pipelineMarkDirty();
-          }}
-          onPanicReset={() => {
-            setPipeline({
-              artifactReduction: { enabled: false, mode: 'con' },
-              denoise: { enabled: false, strength: 0 },
-              superRes: { enabled: false, scale: 2, mode: 'con' },
-              fastUpscale: { enabled: false, scale: 2, strength: 0.4 },
-              rife: { enabled: false, sensitivity: 0.35 },
-              fsr: { enabled: true }
-            });
-            void window.electronAPI.pipelineMarkClean();
-          }}
-        />
-      )}
+      <AnimatePresence initial={false}>
+        {sidebarOpen && (
+          <motion.div
+            key="studio-sidebar"
+            initial={{ width: 0, opacity: 0 }}
+            animate={{ width: 320, opacity: 1 }}
+            exit={{ width: 0, opacity: 0 }}
+            transition={{ type: 'spring', stiffness: 360, damping: 32 }}
+            className="overflow-hidden h-full flex-shrink-0 z-20 flex flex-row"
+          >
+            <ControlPanel
+              phoneName={phoneName}
+              battery={battery}
+              batteryTrend={batteryTrend}
+              isConnected={isConnected}
+              filters={filters}
+              transform={transform}
+              overlays={overlays}
+              resolution={resolution}
+              onResolutionChange={handleResolutionChange}
+              switchingRes={switchingRes}
+              fps={fps}
+              onFpsChange={handleFpsChange}
+              zoom={zoom}
+              zoomRange={zoomRange}
+              ev={ev}
+              evRange={evRange}
+              torch={torch}
+              activeCamera={activeCamera}
+              cameras={cameras}
+              onConnect={() => handleConnect()}
+              onDisconnect={handleDisconnect}
+              onFilterChange={(newFilters) => setFilters((prev) => ({ ...prev, ...newFilters }))}
+              onResetFilters={() => setFilters({ ...DEFAULT_FILTERS })}
+              onTransformChange={(newT) => setTransform((prev) => ({ ...prev, ...newT }))}
+              onResetTransform={() => setTransform({ ...DEFAULT_TRANSFORM })}
+              onSnapCenter={handleSnapCenter}
+              onZoomChange={handleZoomChange}
+              onEvChange={handleEvChange}
+              onTorchToggle={handleTorchToggle}
+              onAutofocus={handleAutofocus}
+              onCameraChange={handleCameraChange}
+              onCaptureScreenshot={handleCaptureScreenshot}
+              vcamActive={vcamActive}
+              vcamFrames={vcamFrames}
+              vcamError={vcamError}
+              onVcamToggle={handleVcamToggle}
+              onOverlayUpdate={(id, update) =>
+                setOverlays((prev) => prev.map((o) => (o.id === id ? { ...o, ...update } : o)))
+              }
+              onOverlayDelete={(id) => {
+                setOverlays((prev) => prev.filter((o) => o.id !== id));
+                setSelectedOverlayId(null);
+              }}
+              selectedOverlayId={selectedOverlayId}
+              onOverlaySelect={setSelectedOverlayId}
+              focusOverlaysSignal={focusOverlaysSignal}
+              pipeline={pipeline}
+              pipelineHud={pipelineHud}
+              sourceWidth={parseInt(resolution.split('x')[0], 10) || 1920}
+              sourceHeight={parseInt(resolution.split('x')[1], 10) || 1080}
+              pipelineSafeMode={pipelineSafeMode}
+              onPipelineChange={(next) => {
+                setPipeline((prev) => ({ ...prev, ...next }));
+                void window.electronAPI.pipelineMarkDirty();
+              }}
+              onPanicReset={() => {
+                setPipeline({
+                  artifactReduction: { enabled: false, mode: 'con' },
+                  denoise: { enabled: false, strength: 0 },
+                  superRes: { enabled: false, scale: 2, mode: 'con' },
+                  fastUpscale: { enabled: false, scale: 2, strength: 0.4 },
+                  rife: { enabled: false, sensitivity: 0.35 },
+                  fsr: { enabled: true }
+                });
+                void window.electronAPI.pipelineMarkClean();
+              }}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Overlay Right-Click Context Menu */}
       {contextMenu && (() => {
@@ -1705,8 +1984,12 @@ export const App: React.FC = () => {
               setContextMenu(null);
             }}
           >
-            <div
-              className="absolute glass-panel bg-[#0d1117]/95 backdrop-blur-2xl border border-white/20 rounded-xl shadow-2xl p-3 z-50 w-72 text-xs font-mono select-none space-y-2.5 animate-scale-in"
+            <motion.div
+              initial={{ scale: 0.92, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.92, opacity: 0 }}
+              transition={{ type: 'spring', stiffness: 450, damping: 30 }}
+              className="absolute glass-panel bg-[#0d1117]/95 backdrop-blur-2xl border border-white/20 rounded-xl shadow-2xl p-3 z-50 w-72 text-xs font-mono select-none space-y-2.5"
               style={{
                 left: Math.min(contextMenu.x, window.innerWidth - 300),
                 top: Math.min(contextMenu.y, window.innerHeight - 440)
@@ -1945,7 +2228,7 @@ export const App: React.FC = () => {
                    <span>Delete</span>
                  </button>
                </div>
-             </div>
+            </motion.div>
            </div>
          );
        })()}
