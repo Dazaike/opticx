@@ -45,7 +45,7 @@ const quadToPointsString = (pts: Array<{ x: number; y: number }>, fw: number, fh
 
 
 const DEFAULT_FILTERS: FilterSettings = {
-  sharpen: 0.46,
+  sharpen: 0.0,
   brightness: 0.0,
   contrast: 1.0,
   saturation: 1.0,

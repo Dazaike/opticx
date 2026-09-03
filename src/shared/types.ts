@@ -27,7 +27,7 @@ export interface StreamConfig {
 }
 
 export interface FilterSettings {
-  sharpen: number;     // 0.0 - 2.0 (default: 0.46)
+  sharpen: number;     // 0.0 - 2.0 (default: 0.0)
   brightness: number;  // -1.0 - 1.0 (default: 0.0)
   contrast: number;    // 0.0 - 2.0 (default: 1.0)
   saturation: number;  // 0.0 - 2.0 (default: 1.0)

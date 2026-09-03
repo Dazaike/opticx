@@ -22,7 +22,7 @@ uniform sampler2D u_image;
 uniform vec2 u_textureSize;
 
 // Filter Parameters
-uniform float u_sharpen;      // 0.0 to 2.0 (default 0.46)
+uniform float u_sharpen;      // 0.0 to 2.0 (default 0.0)
 uniform float u_brightness;   // -1.0 to 1.0 (default 0.0)
 uniform float u_contrast;     // 0.0 to 2.0 (default 1.0)
 uniform float u_saturation;   // 0.0 to 2.0 (default 1.0)
