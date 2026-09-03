@@ -462,7 +462,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
 
             <div className="space-y-1.5 bg-black/40 p-2.5 rounded-lg border border-white/[0.06]">
               <div className="flex justify-between text-xs">
-                <span className="text-neutral-200 font-medium">RCAS Sharpen</span>
+                <span className="text-neutral-200 font-medium">Sharpen</span>
                 <span className="font-mono text-white font-semibold">{filters.sharpen.toFixed(2)}</span>
               </div>
               <input

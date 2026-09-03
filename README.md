@@ -1,4 +1,4 @@
-# Optic X Studio v1.3.1
+# Optic X Studio v1.3.2
 
 You wanted your phone's camera on your PC without paying for a $40 webcam or trusting a sketchy app with root access. Congratulations, this is that, minus the nonsense.
 
