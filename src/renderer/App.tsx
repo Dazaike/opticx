@@ -38,6 +38,11 @@ const clamp = (value: number, min: number, max: number): number =>
 
 const overlayFilterCss = (f: OverlayFilters): string =>
   `brightness(${1 + f.brightness}) contrast(${f.contrast}) saturate(${f.saturation}) hue-rotate(${f.hue}deg)${f.blur && f.blur > 0 ? ` blur(${f.blur}px)` : ''}`;
+const quadToPointsString = (pts: Array<{ x: number; y: number }>, fw: number, fh: number): string =>
+  pts
+    .map((p) => `${(((p.x + 1) / 2) * fw).toFixed(1)},${(((1 - p.y) / 2) * fh).toFixed(1)}`)
+    .join(' ');
+
 
 const DEFAULT_FILTERS: FilterSettings = {
   sharpen: 0.46,
@@ -104,6 +109,9 @@ export const App: React.FC = () => {
   const lastBatteryLevelRef = useRef<number | null>(null);
   const quadSeededRef = useRef(false);
   const [cameraQuad, setCameraQuad] = useState<Array<{ x: number; y: number }>>([]);
+  const [centerQuad, setCenterQuad] = useState<Array<{ x: number; y: number }>>([]);
+  const [isSnapped, setIsSnapped] = useState<{ x: boolean; y: boolean }>({ x: true, y: true });
+  const [isDraggingCamera, setIsDraggingCamera] = useState<boolean>(false);
   const [fps, setFps] = useState<OutputFps>(30);
   const [switchingRes, setSwitchingRes] = useState<string | null>(null);
   const [filters, setFilters] = useState<FilterSettings>({ ...DEFAULT_FILTERS });
@@ -116,6 +124,8 @@ export const App: React.FC = () => {
   // Interaction dragging for pan / zoom
   const isDraggingRef = useRef<boolean>(false);
   const dragStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const rawOffsetRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const isSnappedRef = useRef<{ x: boolean; y: boolean }>({ x: true, y: true });
   const overlayDragRef = useRef<{
     id: string;
     mode: 'move' | 'resize';
