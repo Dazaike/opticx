@@ -36,6 +36,7 @@ import {
 } from '../../shared/types';
 import opticxIcon from '../../assets/opticx-icon.png';
 import { AiPipelinePanel } from './AiPipelinePanel';
+import { CustomSelect } from './CustomSelect';
 
 interface ControlPanelProps {
   phoneName: string;
@@ -269,11 +270,11 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
               <AnimatePresence initial={false}>
                 {isActive && (
                   <motion.span
-                    initial={{ opacity: 0, width: 0 }}
-                    animate={{ opacity: 1, width: 'auto' }}
-                    exit={{ opacity: 0, width: 0 }}
-                    transition={{ type: 'spring', stiffness: 500, damping: 35 }}
-                    className="relative z-10 overflow-hidden whitespace-nowrap text-[11px] font-semibold"
+                    initial={{ opacity: 0, scale: 0.9 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.9 }}
+                    transition={{ duration: 0.14, ease: 'easeOut' }}
+                    className="relative z-10 whitespace-nowrap text-[11px] font-semibold"
                   >
                     {tab.label}
                   </motion.span>
@@ -301,21 +302,17 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
               <span className="text-[11px] font-mono uppercase tracking-wider text-neutral-400">
                 Resolution
               </span>
-
-              <div className="relative">
-                <select
-                  value={resolution}
-                  onChange={(e) => onResolutionChange(e.target.value)}
-                  disabled={Boolean(switchingRes)}
-                  className="w-full bg-neutral-900 hover:bg-neutral-800/80 border border-white/10 rounded-lg px-3 py-2 text-xs text-neutral-200 appearance-none focus:outline-none focus:border-white transition-colors cursor-pointer"
-                >
-                  <option value="3840x2160">4K UHD (3840x2160)</option>
-                  <option value="1920x1080">1080p FHD (1920x1080)</option>
-                  <option value="1280x720">720p HD (1280x720)</option>
-                  <option value="640x480">480p SD (640x480)</option>
-                </select>
-                <ChevronDown className="w-4 h-4 text-neutral-400 absolute right-2.5 top-2.5 pointer-events-none" />
-              </div>
+              <CustomSelect
+                value={resolution}
+                onChange={(val) => onResolutionChange(val)}
+                disabled={Boolean(switchingRes)}
+                options={[
+                  { value: '3840x2160', label: '4K UHD (3840x2160)' },
+                  { value: '1920x1080', label: '1080p FHD (1920x1080)' },
+                  { value: '1280x720', label: '720p HD (1280x720)' },
+                  { value: '640x480', label: '480p SD (640x480)' }
+                ]}
+              />
 
               {switchingRes && (
                 <div className="flex items-center gap-2 text-[11px] text-neutral-300 bg-white/[0.05] border border-white/10 px-2.5 py-1.5 rounded-md animate-pulse-subtle">
@@ -356,21 +353,21 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
 
             {/* Camera Hardware Controls */}
             <div className="pt-2 border-t border-white/[0.08] space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-mono uppercase tracking-wider text-neutral-400">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] font-mono uppercase tracking-wider text-neutral-400 shrink-0">
                   Lens
                 </span>
-                <select
-                  value={activeCamera}
-                  onChange={(e) => onCameraChange(Number(e.target.value))}
-                  className="bg-neutral-900 border border-white/10 text-[11px] rounded px-2 py-1 text-neutral-200 focus:outline-none focus:border-white transition-colors"
-                >
-                  {cameras.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
+                <div className="w-44">
+                  <CustomSelect
+                    size="sm"
+                    value={activeCamera}
+                    onChange={(val) => onCameraChange(val)}
+                    options={cameras.map((c) => ({
+                      value: c.id,
+                      label: c.name
+                    }))}
+                  />
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-2">
@@ -757,22 +754,21 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                           <div className="flex justify-between text-[10px] text-neutral-400 font-mono">
                             <span>Blend Mode</span>
                           </div>
-                          <select
+                          <CustomSelect
+                            size="sm"
                             value={item.blendMode}
-                            onClick={(e) => e.stopPropagation()}
-                            onChange={(e) =>
+                            onChange={(val) =>
                               onOverlayUpdate(item.id, {
-                                blendMode: e.target.value as OverlayItem['blendMode']
+                                blendMode: val as OverlayItem['blendMode']
                               })
                             }
-                            className="w-full bg-black/40 border border-white/10 rounded-md px-2 py-1 text-[11px] text-neutral-200 font-mono capitalize"
-                          >
-                            {(['normal', 'multiply', 'screen', 'overlay'] as const).map((mode) => (
-                              <option key={mode} value={mode}>
-                                {mode}
-                              </option>
-                            ))}
-                          </select>
+                            options={[
+                              { value: 'normal', label: 'Normal' },
+                              { value: 'multiply', label: 'Multiply' },
+                              { value: 'screen', label: 'Screen' },
+                              { value: 'overlay', label: 'Overlay' }
+                            ]}
+                          />
                         </div>
 
                         {/* Image Transforms */}
