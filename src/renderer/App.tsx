@@ -222,6 +222,8 @@ export const App: React.FC = () => {
 
     const renderer = new WebGLRenderer(canvasRef.current);
     rendererRef.current = renderer;
+    setCameraQuad(renderer.getQuadNdc(DEFAULT_TRANSFORM));
+    setCenterQuad(renderer.getCenterQuadNdc(DEFAULT_TRANSFORM));
 
     const gl = canvasRef.current.getContext('webgl2');
     const encoder = gl ? new Nv12Encoder(gl) : null;
@@ -232,6 +234,7 @@ export const App: React.FC = () => {
       if (!quadSeededRef.current) {
         quadSeededRef.current = true;
         setCameraQuad(renderer.getContentQuadNdc());
+        setCenterQuad(renderer.getCenterQuadNdc(transformRef.current));
       }
 
       if (
@@ -359,6 +362,7 @@ export const App: React.FC = () => {
           canvas.height = ch;
           renderer.redraw(filtersRef.current, transformRef.current);
           setCameraQuad(renderer.getContentQuadNdc());
+          setCenterQuad(renderer.getCenterQuadNdc(transformRef.current));
         }
       }
     };
@@ -381,8 +385,9 @@ export const App: React.FC = () => {
     filtersRef.current = filters;
     transformRef.current = transform;
     rendererRef.current?.redraw(filters, transform);
-    if (rendererRef.current?.frameSource.texture) {
+    if (rendererRef.current) {
       setCameraQuad(rendererRef.current.getContentQuadNdc());
+      setCenterQuad(rendererRef.current.getCenterQuadNdc(transform));
     }
   }, [filters, transform]);
 
@@ -734,16 +739,72 @@ export const App: React.FC = () => {
   }, []);
 
   // Canvas Pan & Zoom
-  const applyLiveTransform = (next: TransformSettings) => {
+  const applyLiveTransform = (
+    next: TransformSettings,
+    snapStatus?: { snappedX: boolean; snappedY: boolean }
+  ) => {
     transformRef.current = next;
     rendererRef.current?.redraw(filtersRef.current, next);
-    const poly = document.getElementById('opticx-camera-bounds');
+
     const pts = rendererRef.current?.getContentQuadNdc();
-    if (poly && pts) {
-      poly.setAttribute(
-        'points',
-        pts.map((p) => `${(p.x + 1) / 2},${(1 - p.y) / 2}`).join(' ')
-      );
+    if (!pts || pts.length !== 4) return;
+
+    const fw = frameSize.width;
+    const fh = frameSize.height;
+
+    // 1. Update active camera bounds polygon
+    const poly = document.getElementById('opticx-camera-bounds');
+    if (poly) {
+      poly.setAttribute('points', quadToPointsString(pts, fw, fh));
+    }
+
+    // 2. Update corner handles
+    for (let i = 0; i < 4; i++) {
+      const handle = document.getElementById(`opticx-corner-${i}`);
+      if (handle) {
+        const px = ((pts[i].x + 1) / 2) * fw;
+        const py = ((1 - pts[i].y) / 2) * fh;
+        handle.setAttribute('cx', px.toFixed(1));
+        handle.setAttribute('cy', py.toFixed(1));
+      }
+    }
+
+    // 3. Update center outline visibility and snap highlighting
+    const isMoved = Math.abs(next.offsetX) > 0.002 || Math.abs(next.offsetY) > 0.002;
+    const centerGroup = document.getElementById('opticx-center-group');
+    if (centerGroup) {
+      centerGroup.style.opacity = isMoved || isDraggingRef.current ? '1' : '0';
+    }
+
+    const centerPoly = document.getElementById('opticx-center-bounds');
+    const snapGuideX = document.getElementById('opticx-snap-guide-x');
+    const snapGuideY = document.getElementById('opticx-snap-guide-y');
+    const snapBadge = document.getElementById('opticx-snap-badge');
+
+    const bothSnapped = snapStatus ? snapStatus.snappedX && snapStatus.snappedY : !isMoved;
+
+    if (centerPoly) {
+      if (bothSnapped) {
+        centerPoly.setAttribute('stroke', '#38bdf8');
+        centerPoly.setAttribute('stroke-dasharray', 'none');
+        centerPoly.style.filter = 'drop-shadow(0 0 6px rgba(56, 189, 248, 0.8))';
+      } else {
+        centerPoly.setAttribute('stroke', 'rgba(255, 255, 255, 0.45)');
+        centerPoly.setAttribute('stroke-dasharray', '6 4');
+        centerPoly.style.filter = 'drop-shadow(0 0 2px rgba(0, 0, 0, 0.8))';
+      }
+    }
+
+    if (snapGuideX) {
+      snapGuideX.style.display =
+        snapStatus && snapStatus.snappedX && isDraggingRef.current ? 'block' : 'none';
+    }
+    if (snapGuideY) {
+      snapGuideY.style.display =
+        snapStatus && snapStatus.snappedY && isDraggingRef.current ? 'block' : 'none';
+    }
+    if (snapBadge) {
+      snapBadge.style.display = bothSnapped && isDraggingRef.current ? 'flex' : 'none';
     }
   };
 
@@ -752,7 +813,16 @@ export const App: React.FC = () => {
     if (e.button === 0) {
       setSelectedOverlayId(null);
       isDraggingRef.current = true;
+      setIsDraggingCamera(true);
       dragStartRef.current = { x: e.clientX, y: e.clientY };
+      rawOffsetRef.current = {
+        x: transformRef.current.offsetX,
+        y: transformRef.current.offsetY
+      };
+      const initialSnappedX = Math.abs(transformRef.current.offsetX) < 0.001;
+      const initialSnappedY = Math.abs(transformRef.current.offsetY) < 0.001;
+      isSnappedRef.current = { x: initialSnappedX, y: initialSnappedY };
+      setIsSnapped({ x: initialSnappedX, y: initialSnappedY });
     }
   };
 
@@ -762,17 +832,42 @@ export const App: React.FC = () => {
     const dx = (e.clientX - dragStartRef.current.x) / (300 * zoom);
     const dy = -(e.clientY - dragStartRef.current.y) / (300 * zoom);
     dragStartRef.current = { x: e.clientX, y: e.clientY };
-    applyLiveTransform({
-      ...transformRef.current,
-      offsetX: transformRef.current.offsetX + dx,
-      offsetY: transformRef.current.offsetY + dy
-    });
+
+    rawOffsetRef.current.x += dx;
+    rawOffsetRef.current.y += dy;
+
+    // Magnetic snap threshold: snap to 0 when near center
+    const SNAP_THRESHOLD = 0.055;
+
+    const snappedX = Math.abs(rawOffsetRef.current.x) < SNAP_THRESHOLD;
+    const snappedY = Math.abs(rawOffsetRef.current.y) < SNAP_THRESHOLD;
+
+    const appliedOffsetX = snappedX ? 0 : rawOffsetRef.current.x;
+    const appliedOffsetY = snappedY ? 0 : rawOffsetRef.current.y;
+
+    isSnappedRef.current = { x: snappedX, y: snappedY };
+    setIsSnapped({ x: snappedX, y: snappedY });
+
+    applyLiveTransform(
+      {
+        ...transformRef.current,
+        offsetX: appliedOffsetX,
+        offsetY: appliedOffsetY
+      },
+      { snappedX, snappedY }
+    );
   };
 
   const handleMouseUp = () => {
     if (isDraggingRef.current) {
       isDraggingRef.current = false;
+      setIsDraggingCamera(false);
+      if (isSnappedRef.current.x) rawOffsetRef.current.x = 0;
+      if (isSnappedRef.current.y) rawOffsetRef.current.y = 0;
       setTransform({ ...transformRef.current });
+      if (rendererRef.current) {
+        setCameraQuad(rendererRef.current.getContentQuadNdc());
+      }
     }
   };
 
@@ -785,10 +880,16 @@ export const App: React.FC = () => {
   };
 
   const handleDoubleClick = () => {
+    rawOffsetRef.current = { x: 0, y: 0 };
+    isSnappedRef.current = { x: true, y: true };
+    setIsSnapped({ x: true, y: true });
     setTransform({ ...DEFAULT_TRANSFORM });
   };
 
   const handleSnapCenter = () => {
+    rawOffsetRef.current = { x: 0, y: 0 };
+    isSnappedRef.current = { x: true, y: true };
+    setIsSnapped({ x: true, y: true });
     setTransform((prev) => ({ ...prev, offsetX: 0, offsetY: 0 }));
   };
 
@@ -1056,20 +1157,132 @@ export const App: React.FC = () => {
                 ref={canvasRef}
                 className="absolute inset-0 w-full h-full cursor-grab active:cursor-grabbing"
               />
-          {isConnected && cameraQuad.length === 4 && selectedOverlayId === null && (
-            <svg className="absolute inset-0 pointer-events-none" viewBox="0 0 1 1" preserveAspectRatio="none">
+          {/* Active Camera Frame, Center Home Outline & Magnetic Guides */}
+          {cameraQuad.length === 4 && selectedOverlayId === null && (
+            <svg
+              className="absolute inset-0 w-full h-full pointer-events-none overflow-visible"
+              viewBox={`0 0 ${frameSize.width} ${frameSize.height}`}
+            >
+              {/* 1. Center Home Outline (underneath active camera) */}
+              {centerQuad.length === 4 && (
+                <g
+                  id="opticx-center-group"
+                  style={{
+                    opacity:
+                      Math.abs(transform.offsetX) > 0.002 ||
+                      Math.abs(transform.offsetY) > 0.002 ||
+                      isDraggingCamera
+                        ? 1
+                        : 0,
+                    transition: isDraggingCamera ? 'none' : 'opacity 0.2s ease'
+                  }}
+                >
+                  <polygon
+                    id="opticx-center-bounds"
+                    points={quadToPointsString(centerQuad, frameSize.width, frameSize.height)}
+                    fill="rgba(56, 189, 248, 0.04)"
+                    stroke={isSnapped.x && isSnapped.y ? '#38bdf8' : 'rgba(255, 255, 255, 0.45)'}
+                    strokeWidth="1.5"
+                    strokeDasharray={isSnapped.x && isSnapped.y ? 'none' : '6 4'}
+                    style={{
+                      filter:
+                        isSnapped.x && isSnapped.y
+                          ? 'drop-shadow(0 0 6px rgba(56, 189, 248, 0.8))'
+                          : 'drop-shadow(0 0 2px rgba(0, 0, 0, 0.8))',
+                      transition: 'stroke 0.15s, filter 0.15s'
+                    }}
+                  />
+                  {/* Center crosshair */}
+                  <line
+                    x1={frameSize.width / 2 - 10}
+                    y1={frameSize.height / 2}
+                    x2={frameSize.width / 2 + 10}
+                    y2={frameSize.height / 2}
+                    stroke={isSnapped.x && isSnapped.y ? '#38bdf8' : 'rgba(255, 255, 255, 0.4)'}
+                    strokeWidth="1.5"
+                  />
+                  <line
+                    x1={frameSize.width / 2}
+                    y1={frameSize.height / 2 - 10}
+                    x2={frameSize.width / 2}
+                    y2={frameSize.height / 2 + 10}
+                    stroke={isSnapped.x && isSnapped.y ? '#38bdf8' : 'rgba(255, 255, 255, 0.4)'}
+                    strokeWidth="1.5"
+                  />
+                </g>
+              )}
+
+              {/* 2. Magnetic Alignment Guide Lines */}
+              <line
+                id="opticx-snap-guide-x"
+                x1={frameSize.width / 2}
+                y1={0}
+                x2={frameSize.width / 2}
+                y2={frameSize.height}
+                stroke="#38bdf8"
+                strokeWidth="1"
+                strokeDasharray="4 4"
+                style={{
+                  display: isDraggingCamera && isSnapped.x ? 'block' : 'none',
+                  filter: 'drop-shadow(0 0 3px rgba(56, 189, 248, 0.9))'
+                }}
+              />
+              <line
+                id="opticx-snap-guide-y"
+                x1={0}
+                y1={frameSize.height / 2}
+                x2={frameSize.width}
+                y2={frameSize.height / 2}
+                stroke="#38bdf8"
+                strokeWidth="1"
+                strokeDasharray="4 4"
+                style={{
+                  display: isDraggingCamera && isSnapped.y ? 'block' : 'none',
+                  filter: 'drop-shadow(0 0 3px rgba(56, 189, 248, 0.9))'
+                }}
+              />
+
+              {/* 3. Active Transformed Camera Output Box */}
               <polygon
                 id="opticx-camera-bounds"
-                points={cameraQuad
-                  .map((p) => `${(p.x + 1) / 2},${(1 - p.y) / 2}`)
-                  .join(' ')}
+                points={quadToPointsString(cameraQuad, frameSize.width, frameSize.height)}
                 fill="none"
-                stroke="white"
-                strokeWidth="0.004"
-                vectorEffect="non-scaling-stroke"
+                stroke="#ffffff"
+                strokeWidth="1.5"
+                style={{ filter: 'drop-shadow(0 0 2.5px rgba(0, 0, 0, 0.85))' }}
               />
+
+              {/* 4. Corner Handles */}
+              {cameraQuad.map((p, idx) => {
+                const px = ((p.x + 1) / 2) * frameSize.width;
+                const py = ((1 - p.y) / 2) * frameSize.height;
+                return (
+                  <circle
+                    key={idx}
+                    id={`opticx-corner-${idx}`}
+                    cx={px.toFixed(1)}
+                    cy={py.toFixed(1)}
+                    r="3.5"
+                    fill="#ffffff"
+                    stroke="#0284c7"
+                    strokeWidth="1.5"
+                  />
+                );
+              })}
             </svg>
           )}
+
+          {/* Magnetic Snap Badge Feedback */}
+          <div
+            id="opticx-snap-badge"
+            className="absolute top-4 left-1/2 -translate-x-1/2 z-30 pointer-events-none items-center gap-1.5 px-3 py-1 rounded-full bg-cyan-950/80 border border-cyan-400/60 shadow-[0_0_12px_rgba(6,182,212,0.4)] text-[11px] font-mono text-cyan-200 backdrop-blur-md transition-all duration-150"
+            style={{
+              display: isDraggingCamera && isSnapped.x && isSnapped.y ? 'flex' : 'none'
+            }}
+          >
+            <Crosshair className="w-3 h-3 text-cyan-400 animate-pulse" />
+            <span>SNAPPED TO CENTER</span>
+          </div>
 
           {/* Alignment Rule-of-Thirds Grid Overlay */}
           {showGrid && (

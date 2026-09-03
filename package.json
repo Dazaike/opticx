@@ -1,6 +1,6 @@
 {
   "name": "opticx",
-  "version": "1.0.23",
+  "version": "1.0.24",
   "description": "Optic X Studio - High-Performance 4K Camera & Virtual Studio",
   "main": "dist/main/index.js",
   "scripts": {
