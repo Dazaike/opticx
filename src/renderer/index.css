@@ -162,7 +162,7 @@ input[type="range"].studio-slider::-webkit-slider-thumb:active {
 @keyframes countdownNumberFade {
   0% {
     opacity: 0;
-    transform: scale(1.2);
+    transform: scale(1.15);
     filter: blur(2px);
   }
   18% {
@@ -172,13 +172,24 @@ input[type="range"].studio-slider::-webkit-slider-thumb:active {
   }
   82% {
     opacity: 1;
-    transform: scale(0.98);
+    transform: scale(1);
     filter: blur(0px);
   }
   100% {
     opacity: 0;
-    transform: scale(0.85);
+    transform: scale(0.9);
     filter: blur(2px);
+  }
+}
+
+@keyframes simpleFadeIn {
+  0% {
+    opacity: 0;
+    transform: translateY(1px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
 
@@ -201,4 +212,8 @@ input[type="range"].studio-slider::-webkit-slider-thumb:active {
 
 .animate-shutter-flash {
   animation: shutterFlash 0.35s ease-out forwards;
+}
+
+.animate-simple-fade {
+  animation: simpleFadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }

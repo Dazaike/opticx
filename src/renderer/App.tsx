@@ -1015,20 +1015,18 @@ export const App: React.FC = () => {
                 <div
                   onClick={cancelCountdown}
                   title="Click to cancel timer"
-                  className="flex items-center justify-center min-w-[76px] h-7 px-3 bg-white/10 hover:bg-white/15 border border-white/20 rounded-full cursor-pointer transition-all duration-200 select-none shadow-[0_0_16px_rgba(255,255,255,0.2)] animate-fade-in-up"
+                  className="flex items-center justify-center gap-2 min-w-[76px] h-8 px-3.5 bg-neutral-900/90 border border-white/20 rounded-full cursor-pointer hover:bg-neutral-800/90 transition-all duration-150 select-none shadow-[0_0_16px_rgba(0,0,0,0.5)] animate-simple-fade ml-1"
                 >
-                  <div className="flex items-center gap-1.5">
-                    <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse shrink-0" />
-                    <span
-                      key={countdown}
-                      className="text-lg font-mono font-bold text-white tracking-wider animate-countdown-number inline-block min-w-[16px] text-center"
-                    >
-                      {countdown}
-                    </span>
-                  </div>
+                  <span className="w-2.5 h-2.5 rounded-full bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.9)] animate-pulse shrink-0" />
+                  <span
+                    key={countdown}
+                    className="text-sm font-mono font-bold text-white tracking-widest animate-countdown-number inline-block min-w-[14px] text-center"
+                  >
+                    {countdown}
+                  </span>
                 </div>
               ) : (
-                <div className="flex items-center gap-1 transition-all duration-300 ease-out">
+                <div className="flex items-center gap-1.5 transition-all duration-300 ease-out">
                   <button
                     onClick={handleCameraButtonClick}
                     title={
@@ -1038,45 +1036,43 @@ export const App: React.FC = () => {
                         ? `Start ${activeTimer}s Timed Photo`
                         : 'Take Instant Photo'
                     }
-                    className={`flex items-center justify-center rounded-full font-semibold text-xs transition-all duration-300 ease-out shadow-[0_0_16px_rgba(255,255,255,0.2)] active:scale-95 ${
+                    className={`flex items-center justify-center rounded-full font-semibold text-xs transition-all duration-200 active:scale-95 ${
                       timerMenuOpen
-                        ? `w-7 h-7 p-0 ${activeTimer ? 'bg-white text-black ring-2 ring-white/60 shadow-[0_0_16px_rgba(255,255,255,0.5)]' : 'bg-white hover:bg-neutral-200 text-black'}`
-                        : 'px-3.5 py-1.5 gap-1.5 bg-white hover:bg-neutral-200 text-black ml-0.5'
+                        ? `w-8 h-8 p-0 bg-white text-black ${
+                            activeTimer !== null
+                              ? 'shadow-[0_0_12px_2px_rgba(255,255,255,0.7)]'
+                              : 'shadow-[0_0_8px_rgba(255,255,255,0.3)] hover:bg-neutral-200'
+                          }`
+                        : 'h-8 px-3.5 gap-1.5 bg-white hover:bg-neutral-200 text-black shadow-[0_0_12px_rgba(255,255,255,0.25)] ml-0.5'
                     }`}
                   >
                     <Camera className="w-3.5 h-3.5 shrink-0" />
-                    <span
-                      className={`overflow-hidden whitespace-nowrap transition-all duration-300 ease-out ${
-                        timerMenuOpen ? 'max-w-0 opacity-0' : 'max-w-[48px] opacity-100'
-                      }`}
-                    >
-                      Snap
-                    </span>
+                    {!timerMenuOpen && <span className="text-xs font-semibold leading-none">Snap</span>}
                   </button>
 
                   <div
-                    className={`flex items-center gap-1 overflow-hidden transition-all duration-300 ease-out ${
+                    className={`flex items-center gap-1.5 transition-all duration-300 ease-out ${
                       timerMenuOpen
-                        ? 'max-w-[180px] opacity-100 ml-1'
-                        : 'max-w-0 opacity-0 pointer-events-none'
+                        ? 'max-w-[200px] opacity-100 ml-1'
+                        : 'max-w-0 opacity-0 pointer-events-none overflow-hidden'
                     }`}
                   >
                     {([3, 5, 10] as const).map((secs, idx) => {
                       const isActive = activeTimer === secs;
-                      return (
-                        <button
-                          key={secs}
-                          onClick={() => handleTimerSelect(secs)}
-                          title={`${secs} seconds timer`}
-                          style={{
-                            animationDelay: timerMenuOpen ? `${idx * 45}ms` : '0ms'
-                          }}
-                          className={`h-7 px-2.5 rounded-full text-[11px] font-mono font-medium transition-all duration-200 flex items-center justify-center select-none border ${
+                       return (
+                         <button
+                           key={secs}
+                           onClick={() => handleTimerSelect(secs)}
+                           title={`${secs} seconds timer`}
+                           style={{
+                             animationDelay: timerMenuOpen ? `${idx * 45}ms` : '0ms'
+                           }}
+                          className={`h-8 px-3 rounded-full text-xs font-mono font-medium transition-all duration-150 flex items-center justify-center select-none ${
                             timerMenuOpen ? 'animate-timer-enter' : ''
                           } ${
                             isActive
-                              ? 'bg-white text-black font-bold border-white shadow-[0_0_14px_rgba(255,255,255,0.45)] scale-105'
-                              : 'bg-white/10 hover:bg-white/20 text-neutral-300 hover:text-white border-white/10 hover:border-white/20'
+                              ? 'bg-white text-black font-bold border border-white shadow-[0_0_12px_rgba(255,255,255,0.6)]'
+                              : 'bg-white/10 hover:bg-white/20 text-neutral-300 hover:text-white border border-white/10'
                           }`}
                         >
                           {secs}s
@@ -1112,22 +1108,6 @@ export const App: React.FC = () => {
           </div>
         )}
 
-        {/* Fullscreen Shutter Flash */}
-        {shutterFlash && (
-          <div className="fixed inset-0 z-50 pointer-events-none bg-white animate-shutter-flash" />
-        )}
-
-        {/* Cinematic Viewfinder Countdown Overlay */}
-        {isCountingDown && countdown !== null && countdown > 0 && (
-          <div className="fixed inset-0 z-40 pointer-events-none flex items-center justify-center select-none">
-            <div
-              key={countdown}
-              className="text-8xl md:text-9xl font-mono font-black text-white drop-shadow-[0_0_50px_rgba(255,255,255,0.85)] animate-countdown-number"
-            >
-              {countdown}
-            </div>
-          </div>
-        )}
 
         {/* Video Canvas Stage */}
         <div
@@ -1140,6 +1120,22 @@ export const App: React.FC = () => {
           onWheel={handleWheel}
           onDoubleClick={handleDoubleClick}
         >
+          {/* Shutter Flash Overlay */}
+          {shutterFlash && (
+            <div className="absolute inset-0 z-50 pointer-events-none bg-white animate-shutter-flash" />
+          )}
+
+          {/* Cinematic Viewfinder Countdown Overlay - Centered on Camera Stage */}
+          {isCountingDown && countdown !== null && countdown > 0 && (
+            <div className="absolute inset-0 z-40 pointer-events-none flex items-center justify-center select-none">
+              <div
+                key={countdown}
+                className="text-8xl md:text-9xl font-mono font-black text-white drop-shadow-[0_0_50px_rgba(255,255,255,0.85)] animate-countdown-number"
+              >
+                {countdown}
+              </div>
+            </div>
+          )}
           <div
             ref={editorFrameRef}
             className="relative bg-[#1c1c1c] shadow-2xl rounded-sm overflow-hidden"
