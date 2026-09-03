@@ -698,7 +698,7 @@ export const App: React.FC = () => {
         return;
       }
       const bytes = model.data instanceof Uint8Array ? model.data : new Uint8Array(model.data as ArrayBuffer);
-      const copy = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      const copy = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
       try {
         await pipelineRunnerRef.current.rife.init(copy);
         pipelineRunnerRef.current.rife.sensitivity = pipeline.rife.sensitivity;

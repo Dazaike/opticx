@@ -231,8 +231,8 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
           </button>
         </div>
       </div>
-      {/* KokonutUI Segmented Navigation Sub-Tabs */}
-      <div className="flex items-center p-1 mx-3 mt-2 rounded-xl bg-neutral-900/60 border border-white/[0.08] relative">
+      {/* KokonutUI Expandable Navigation Sub-Tabs */}
+      <div className="flex items-center justify-between p-1 mx-3 mt-2 rounded-xl bg-neutral-900/70 border border-white/[0.08] relative">
         {(
           [
             { id: 'camera', label: 'Camera', icon: Settings2 },
@@ -245,30 +245,48 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
           const isActive = activeTab === tab.id;
           const Icon = tab.icon;
           return (
-            <button
+            <motion.button
               key={tab.id}
+              layout
               onClick={() => setActiveTab(tab.id)}
-              className={`relative flex-1 flex items-center justify-center gap-1 py-1.5 text-[11px] font-medium transition-colors z-10 select-none rounded-lg ${
-                isActive ? 'text-black font-semibold' : 'text-neutral-400 hover:text-neutral-200'
+              title={tab.label}
+              whileTap={{ scale: 0.95 }}
+              transition={{ type: 'spring', stiffness: 500, damping: 35 }}
+              className={`relative flex items-center justify-center gap-1.5 py-1.5 px-2.5 rounded-lg text-xs font-medium transition-colors z-10 select-none ${
+                isActive
+                  ? 'text-black font-semibold'
+                  : 'text-neutral-400 hover:text-neutral-200 hover:bg-white/[0.04]'
               }`}
             >
               {isActive && (
                 <motion.div
                   layoutId="sidebarActiveTabPill"
                   transition={{ type: 'spring', stiffness: 480, damping: 36 }}
-                  className="absolute inset-0 bg-white rounded-lg shadow-[0_2px_10px_rgba(255,255,255,0.25)]"
+                  className="absolute inset-0 bg-white rounded-lg shadow-[0_2px_10px_rgba(255,255,255,0.25)] z-0"
                 />
               )}
-              <span className="relative z-10 flex items-center gap-1">
-                <Icon className="w-3 h-3 shrink-0" />
-                <span>{tab.label}</span>
-                {'badge' in tab && tab.badge && (
-                  <span
-                    className={`w-1.5 h-1.5 rounded-full ${isActive ? 'bg-black' : 'bg-white shadow-[0_0_4px_rgba(255,255,255,0.8)]'}`}
-                  />
+              <Icon className="w-3.5 h-3.5 shrink-0 relative z-10" />
+              <AnimatePresence initial={false}>
+                {isActive && (
+                  <motion.span
+                    initial={{ opacity: 0, width: 0 }}
+                    animate={{ opacity: 1, width: 'auto' }}
+                    exit={{ opacity: 0, width: 0 }}
+                    transition={{ type: 'spring', stiffness: 500, damping: 35 }}
+                    className="relative z-10 overflow-hidden whitespace-nowrap text-[11px] font-semibold"
+                  >
+                    {tab.label}
+                  </motion.span>
                 )}
-              </span>
-            </button>
+              </AnimatePresence>
+              {'badge' in tab && tab.badge && (
+                <span
+                  className={`w-1.5 h-1.5 rounded-full relative z-10 ${
+                    isActive ? 'bg-black' : 'bg-white shadow-[0_0_4px_rgba(255,255,255,0.8)]'
+                  }`}
+                />
+              )}
+            </motion.button>
           );
         })}
       </div>
